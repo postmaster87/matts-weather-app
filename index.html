@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#0e141b">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Weather">
+<meta name="description" content="Hourly, 5-day, and radar. No ads, no trackers, no BS.">
+<title>Weather</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <button id="placeBtn" class="place" aria-label="Change location">
+    <span id="placeName">Locating&hellip;</span>
+    <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <button id="gpsBtn" class="iconbtn" aria-label="Use my location">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v3M12 19v3M2 12h3M19 12h3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.2"/></svg>
+  </button>
+  <button id="refreshBtn" class="iconbtn" aria-label="Refresh">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+</header>
+
+<div id="searchPanel" class="search" hidden>
+  <div class="searchrow">
+    <input id="searchInput" type="search" inputmode="search" autocomplete="off" placeholder="City, ZIP, or place">
+    <button id="searchClose" class="txtbtn">Done</button>
+  </div>
+  <div id="recents" class="chips"></div>
+  <ul id="searchResults" class="results"></ul>
+</div>
+
+<main id="main">
+  <div id="alerts" class="alerts" hidden></div>
+
+  <section id="current" class="card current">
+    <div class="skeleton big"></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead">
+      <h2 id="hourlyTitle">Hourly</h2>
+      <span id="hourlyNote" class="note"></span>
+    </div>
+    <div id="hourly" class="hourly"><div class="skeleton row"></div></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>5 Day</h2><span class="note">tap a day</span></div>
+    <div id="daily" class="daily"><div class="skeleton row"></div></div>
+  </section>
+
+  <section class="card radarcard">
+    <div class="cardhead">
+      <h2>Radar</h2>
+      <button id="radarExpand" class="txtbtn">Expand</button>
+    </div>
+    <div id="radarWrap" class="radarwrap">
+      <div id="map"></div>
+      <div class="radarbar">
+        <button id="radarPlay" class="iconbtn sm" aria-label="Play radar loop">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg>
+        </button>
+        <input id="radarSlider" type="range" min="0" max="0" value="0" step="1" aria-label="Radar frame">
+        <span id="radarTime" class="radartime">&mdash;</span>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span id="updated">&nbsp;</span>
+    <span class="src">Open-Meteo &middot; RainViewer &middot; NWS</span>
+  </footer>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
