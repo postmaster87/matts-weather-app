@@ -1,3 +1,5 @@
-# Keep binaries byte-exact on checkout (autocrlf would corrupt the PDF).
+# Keep binaries byte-exact on checkout (autocrlf would corrupt them).
 *.pdf binary
 *.png binary
+*.apk binary
+*.jar binary

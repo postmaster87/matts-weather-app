@@ -1,8 +1,16 @@
 # Weather
 
-A phone-sized weather app: current conditions, 48-hour hourly, 5-day, and animated
-radar. No ads, no trackers, no analytics, no cookie banner, no account, no API keys.
-One HTML file, one CSS file, one JS file.
+Current conditions, 48-hour hourly, 5-day, and animated radar. No ads, no trackers,
+no analytics, no cookie banner, no account, no API keys.
+
+Two builds, same data and same look:
+
+| | Web PWA | Native Android |
+|---|---|---|
+| Where | repo root, served by GitHub Pages | `android/` |
+| Built with | one HTML + one CSS + one JS file, no build step | Kotlin, Jetpack Compose, osmdroid |
+| Install | Chrome → Add to Home screen | sideload `weather.apk` |
+| Offline | service worker + localStorage | SharedPreferences cache |
 
 Accuracy is ballpark by design — this is a "do I need a jacket / is that cell going
 to hit Veenker" app, not a life-safety product. Watches and warnings come straight
@@ -20,37 +28,85 @@ from the National Weather Service and are the one thing here worth trusting.
 | 5 Day | Day, icon, max chance of precip, and a low→high bar scaled across the whole 5 days. **Tap a day** to swap the hourly strip to that day; tap again for the rolling 48 h. |
 | Radar | 10 past frames (~1 hr) plus RainViewer's 30-minute nowcast. Auto-plays. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. |
 
-Location: tap the place name to search any city, or the crosshair to use GPS.
+Location: tap the place name to search any city, or the crosshair/pin to use GPS.
 The last six places you looked at stay as chips in the search screen. Defaults to
 Ames, IA on a fresh install.
 
 ---
 
-## Install on your phone
+## Install the Android app
 
 **On your phone**, in Chrome:
 
-1. Open the app URL.
-2. Menu (⋮) → **Add to Home screen**.
-3. It launches fullscreen with no browser chrome, and opens instantly from cache.
+1. Open <https://postmaster87.github.io/matts-weather-app/weather.apk>
+2. Chrome will warn about the file type — accept the download.
+3. Tap the downloaded file. Android will ask to allow installs from Chrome; turn
+   it on, then tap Install.
+4. The launcher icon is the sun-behind-cloud, labelled **Weather**.
 
-The last forecast is kept on the device. With no signal it opens and shows the
-cached data with an orange **Offline — cached 2:14pm** line at the bottom instead
-of pretending the numbers are current.
+It is signed with the local debug keystore, so Android calls it an app "from an
+unknown source." That is expected for a sideload. Updates must be signed with the
+same key — install over the top and data is kept; if the key ever changes, uninstall
+first.
+
+## Install the web app instead
+
+**On your phone**, in Chrome:
+
+1. Open <https://postmaster87.github.io/matts-weather-app/>
+2. Menu (⋮) → **Add to Home screen**
+
+Both keep the last forecast on the device and open offline with an orange
+**Offline — cached 2:14pm** line at the bottom instead of pretending the numbers
+are current.
 
 ---
 
-## Deploy to GitHub Pages
+## Building the Android app
 
-**In a browser, on any machine:**
+Everything needed is already on the Windows box: JDK 17, Android SDK 35,
+build-tools, and Gradle 8.9.
 
-1. Go to <https://github.com/postmaster87/matts-weather-app/settings/pages>
-2. **Source** → *Deploy from a branch*
-3. **Branch** → `main`, folder `/ (root)` → **Save**
-4. Wait ~1 minute. The app is live at
-   <https://postmaster87.github.io/matts-weather-app/>
+```bash
+cd android && ./gradlew assembleRelease
+```
 
-There is no build step. Push to `main` and it deploys.
+Output lands at `android/app/build/outputs/apk/release/app-release.apk` (~6.8 MB).
+Copy it to the repo root as `weather.apk` to publish it through Pages.
+
+`android/local.properties` holds the SDK path and is not committed; recreate it on
+another machine with `sdk.dir=<path to the Android SDK>`.
+
+To run it on the emulator:
+
+```bash
+adb install -r android/app/build/outputs/apk/release/app-release.apk
+```
+
+### Layout
+
+```
+android/app/src/main/java/com/matt/weather/
+  MainActivity.kt          activity, permission request, theme
+  WeatherVm.kt             state, refresh + retry, GPS, search
+  data/
+    Models.kt              Place, Current, Hour, Day, Forecast, Alert, RadarFrame
+    WeatherApi.kt          Open-Meteo, NWS, RainViewer, geocoding
+    Net.kt                 HttpURLConnection with a real User-Agent
+    Store.kt               SharedPreferences: place, recents, cached payload
+    Loc.kt                 LocationManager fix + platform reverse geocode
+    Fmt.kt                 wall-clock string formatting
+    Wmo.kt                 WMO code -> icon + label
+  ui/
+    WeatherScreen.kt       screen, top bar, fullscreen radar
+    Cards.kt               current / hourly / daily / alert cards
+    RadarCard.kt           osmdroid map, frame overlays, timeline
+    WeatherIcon.kt         the 12 condition icons, drawn on Canvas
+    Theme.kt               palette
+```
+
+Icons are drawn on a Compose `Canvas` with the same 24-unit geometry as the web
+build's SVGs, so both versions look identical rather than merely similar.
 
 ---
 
@@ -63,20 +119,28 @@ There is no build step. Push to `main` and it deploys.
 | [api.weather.gov](https://www.weather.gov/documentation/services-web-api) | NWS alerts (US only) | No |
 | [RainViewer](https://www.rainviewer.com/api.html) | Radar tiles + nowcast | No |
 | [Esri dark canvas](https://services.arcgisonline.com/) | Radar basemap | No |
-| [BigDataCloud](https://www.bigdatacloud.com/) | Reverse geocode for the GPS button's label | No |
-| [Leaflet 1.9.4](https://leafletjs.com/) (cdnjs) | Map | No |
+| [Leaflet 1.9.4](https://leafletjs.com/) / [osmdroid](https://github.com/osmdroid/osmdroid) | Map (web / Android) | No |
 
 Nothing leaves the phone except the coordinates of the place being looked up.
-There is no server, no database, and no third-party script beyond Leaflet.
+No server, no database, no analytics.
+
+The Android build sends `MattsWeather/1.0 (Android; +<repo URL>)` as its
+User-Agent because api.weather.gov asks callers to identify themselves and
+throttles generic agents. It deliberately carries **no contact email** — add one
+there if you ever want NWS to be able to reach you about traffic.
+
+The web build reverse-geocodes the GPS button's label through
+[BigDataCloud](https://www.bigdatacloud.com/); the Android build uses the
+platform `Geocoder` instead, so it makes no third-party call for that.
 
 ---
 
 ## Known limits
 
 - **Radar detail caps at zoom 7.** RainViewer's free tiles don't exist past z7 —
-  deeper zooms return a "Zoom Level Not Supported" placeholder. The app pins the
-  radar layer at z7 and lets Leaflet upscale, so zooming past regional view gets
-  blocky rather than blank. Map zoom is capped at 10.
+  deeper zooms return a "Zoom Level Not Supported" placeholder. Both builds pin
+  the radar layer at z7 and let the map upscale, so zooming past regional view
+  gets blocky rather than blank. Map zoom is capped at 10.
 - **Alerts are US-only.** `api.weather.gov` returns nothing outside the US; the
   alert strip just stays hidden.
 - **Radar timestamps are in the phone's timezone**, everything else is in the
@@ -86,10 +150,12 @@ There is no server, no database, and no third-party script beyond Leaflet.
   condition, the % is the single wettest hour. Not smoothed over.
 - Open-Meteo is a model blend, not a nowcast. Treat the hourly numbers as
   directionally right, not exact.
+- The Android app is **not on Google Play** and has no update mechanism — a new
+  version means building a new APK and installing it over the old one.
 
 ---
 
-## Files
+## Web build files
 
 ```
 index.html              markup
@@ -98,6 +164,7 @@ app.js                  everything else — data, icons, render, radar
 sw.js                   service worker, caches the shell only
 manifest.webmanifest    PWA manifest
 icons/                  192 / 512 / maskable-512 PNGs
+weather.apk             the published Android build
 ```
 
 Local preview:
