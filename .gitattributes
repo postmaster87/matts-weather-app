@@ -1,0 +1,3 @@
+# Keep binaries byte-exact on checkout (autocrlf would corrupt the PDF).
+*.pdf binary
+*.png binary
