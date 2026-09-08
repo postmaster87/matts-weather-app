@@ -1,7 +1,25 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Release signing lives in android/keystore.properties, which is never
+// committed. Without it the release build comes out UNSIGNED rather than
+// silently falling back to the debug key — an unsigned APK refuses to install,
+// which is a much louder failure than one signed with the wrong key.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+val hasReleaseKey = keystorePropsFile.exists()
+if (!hasReleaseKey) {
+    logger.warn(
+        "\n*** android/keystore.properties is missing — `assembleRelease` will " +
+            "produce an UNSIGNED apk. See the README. ***\n"
+    )
 }
 
 android {
@@ -16,13 +34,22 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storeType = "PKCS12"
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Signed with the local debug keystore so the APK can be sideloaded
-            // without keystore management. Fine for a personal build; a real
-            // upload key would be needed to ship on Play.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKey) signingConfigs.getByName("release") else null
         }
     }
 

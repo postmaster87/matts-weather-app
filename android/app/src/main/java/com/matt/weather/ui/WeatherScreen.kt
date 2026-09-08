@@ -62,7 +62,8 @@ fun WeatherScreen(
     var searching by rememberSaveable { mutableStateOf(false) }
     var fullRadar by rememberSaveable { mutableStateOf(false) }
     var radarIdx by rememberSaveable { mutableIntStateOf(0) }
-    var playing by rememberSaveable { mutableStateOf(true) }
+    // Parked on the newest observed frame until the play button is pressed.
+    var playing by rememberSaveable { mutableStateOf(false) }
 
     val frames = state.radar?.frames.orEmpty()
 

@@ -26,7 +26,7 @@ from the National Weather Service and are the one thing here worth trusting.
 | Current | Temp, condition, feels-like, today's high/low, wind + direction, gust, humidity, UV, sunrise/sunset. |
 | Hourly | Next 48 hours. Horizontal scroll. Blue bar under each hour = chance of precip. |
 | 5 Day | Day, icon, max chance of precip, and a low→high bar scaled across the whole 5 days. **Tap a day** to swap the hourly strip to that day; tap again for the rolling 48 h. |
-| Radar | 10 past frames (~1 hr) plus RainViewer's 30-minute nowcast. Auto-plays. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. |
+| Radar | 10 past frames (~1 hr) plus RainViewer's 30-minute nowcast. Opens **parked on the newest observed frame** — press play to run the loop. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. |
 
 Location: tap the place name to search any city, or the crosshair/pin to use GPS.
 The last six places you looked at stay as chips in the search screen. Defaults to
@@ -44,10 +44,27 @@ Ames, IA on a fresh install.
    it on, then tap Install.
 4. The launcher icon is the sun-behind-cloud, labelled **Weather**.
 
-It is signed with the local debug keystore, so Android calls it an app "from an
-unknown source." That is expected for a sideload. Updates must be signed with the
-same key — install over the top and data is kept; if the key ever changes, uninstall
-first.
+It is signed with a personal **release** key (4096-bit RSA, `CN=Matt`), not the
+Android debug key. Android still calls it an app "from an unknown source" — that is
+what sideloading looks like — but every later build signed with the same key installs
+straight over this one and keeps its data. No uninstall step, ever again.
+
+The published `weather.apk` is byte-for-byte the build running on the phone:
+
+```
+sha256  cc675bf08ce52a5c52e607854938f7440d6fa0ade59a01a53f8b0ca56d153d33
+```
+
+**The key is two files, neither of them in this repo, and neither recoverable:**
+
+```
+%USERPROFILE%\.androidkeys\matts-weather-release.p12
+android/keystore.properties        (holds the keystore password)
+```
+
+Back both up somewhere off the build machine. Lose either one and no future build
+can update an installed copy — the only path left is uninstall and reinstall, which
+loses the saved places and the cached forecast.
 
 ## Install the web app instead
 
@@ -74,8 +91,17 @@ cd android && ./gradlew assembleRelease
 Output lands at `android/app/build/outputs/apk/release/app-release.apk` (~6.8 MB).
 Copy it to the repo root as `weather.apk` to publish it through Pages.
 
-`android/local.properties` holds the SDK path and is not committed; recreate it on
-another machine with `sdk.dir=<path to the Android SDK>`.
+Two files are needed and neither is committed:
+
+| File | Holds |
+|---|---|
+| `android/local.properties` | `sdk.dir=<path to the Android SDK>` |
+| `android/keystore.properties` | `storeFile`, `storePassword`, `keyAlias` (`weather`), `keyPassword` |
+
+Without `keystore.properties` the release build comes out **unsigned** rather than
+quietly falling back to the debug key — Gradle prints a warning saying so, and an
+unsigned APK refuses to install. That is a much louder failure than one signed with
+the wrong key, which would only surface later as an update that cannot be applied.
 
 To run it on the emulator:
 
@@ -151,7 +177,9 @@ platform `Geocoder` instead, so it makes no third-party call for that.
 - Open-Meteo is a model blend, not a nowcast. Treat the hourly numbers as
   directionally right, not exact.
 - The Android app is **not on Google Play** and has no update mechanism — a new
-  version means building a new APK and installing it over the old one.
+  version means building a new APK and installing it over the old one. Since it is
+  signed with the release key that install is now a plain in-place update; it was
+  an uninstall-and-lose-your-data affair while the debug key was in use.
 
 ---
 

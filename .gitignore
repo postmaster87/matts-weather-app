@@ -6,6 +6,11 @@ Thumbs.db
 
 # Android
 android/local.properties
+# Release signing — the keystore password lives here. Never commit.
+android/keystore.properties
+*.jks
+*.p12
+*.keystore
 android/.gradle/
 android/build/
 android/app/build/

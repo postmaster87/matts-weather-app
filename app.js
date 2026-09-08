@@ -422,7 +422,7 @@ async function loadFrames() {
     radar.idx = Math.max(0, radar.frames.length - cast.length - 1); // newest observed frame
     s.value = radar.idx;
     showFrame(radar.idx);
-    playRadar();
+    // Parked on the newest observed frame until the play button is pressed.
   } catch (e) {
     $('#radarTime').textContent = 'unavailable';
   }
