@@ -1,6 +1,7 @@
 package com.matt.weather.data
 
 import org.json.JSONObject
+import kotlin.math.abs
 
 data class Place(
     val name: String,
@@ -101,7 +102,39 @@ data class RadarFrame(val time: Long, val layer: String, val stamp: String, val 
         get() = "iem_" + (layer + if (stamp.isEmpty()) "" else "_$stamp").replace(Regex("[^A-Za-z0-9]"), "_")
 }
 
-data class RadarIndex(val frames: List<RadarFrame>)
+data class RadarIndex(val frames: List<RadarFrame>) {
+    /** Same layers and cache stamps = same picture; a refresh that returns it changes nothing. */
+    val key: String
+        get() = frames.joinToString(",") { it.cacheKey }
+
+    val newestObserved: Int
+        get() = frames.indexOfLast { !it.future }.coerceAtLeast(0)
+
+    /**
+     * Where to stand after the frame list is rebuilt from [old]: parked on the
+     * newest observed frame stays parked there; anything else keeps the
+     * nearest time.
+     */
+    fun idxAfterRefresh(old: List<RadarFrame>, oldIdx: Int): Int {
+        val was = old.getOrNull(oldIdx)
+        if (was == null || oldIdx == RadarIndex(old).newestObserved) return newestObserved
+        var best = 0
+        frames.forEachIndexed { i, f ->
+            if (abs(f.time - was.time) < abs(frames[best].time - was.time)) best = i
+        }
+        return best
+    }
+
+    companion object {
+        /**
+         * While a new HRRR run is landing, two frames can come from different
+         * runs and share a valid time. Keep the newer run's; [RadarFrame.stamp]
+         * is the fixed-width init stamp, so a string compare orders it.
+         */
+        fun dedupeCast(cast: List<RadarFrame>): List<RadarFrame> =
+            cast.groupBy { it.time }.values.map { same -> same.maxBy { it.stamp } }.sortedBy { it.time }
+    }
+}
 
 /** One NEXRAD storm-attribute cell. [drct] is as reported; see StormTracks.heading. */
 data class StormCell(

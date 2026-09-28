@@ -94,8 +94,28 @@ object WeatherApi {
         return Forecast(current, hours, days, System.currentTimeMillis())
     }
 
-    /** NWS active alerts for the exact point. US-only; empty everywhere else. */
+    /**
+     * api.weather.gov answers HTTP 400 outside its coverage, so the request is
+     * only made inside one of these boxes (lat min, lat max, lon min, lon max):
+     * lower 48, Alaska, Hawaii, Puerto Rico / USVI, Guam / CNMI. Boxes, not
+     * borders — a Canadian or Mexican point in the lower-48 box still asks.
+     */
+    private val NWS_BOXES = listOf(
+        doubleArrayOf(24.0, 50.0, -125.0, -66.0), doubleArrayOf(51.0, 72.0, -180.0, -129.0),
+        doubleArrayOf(18.0, 23.0, -161.0, -154.0), doubleArrayOf(17.0, 19.0, -68.0, -64.0),
+        doubleArrayOf(13.0, 21.0, 144.0, 146.0)
+    )
+
+    fun inNwsBox(lat: Double, lon: Double): Boolean =
+        NWS_BOXES.any { lat in it[0]..it[1] && lon in it[2]..it[3] }
+
+    /**
+     * NWS active alerts for the exact point. Empty outside [inNwsBox] without
+     * asking. An HTTP error inside it throws, and the caller reads that as no
+     * alerts.
+     */
     suspend fun alerts(lat: Double, lon: Double): List<Alert> {
+        if (!inNwsBox(lat, lon)) return emptyList()
         val url = "https://api.weather.gov/alerts/active" +
             "?point=${"%.4f".format(lat)},${"%.4f".format(lon)}"
         val root = Net.getJson(url, 9_000)
@@ -206,7 +226,7 @@ object WeatherApi {
                     }
                 }
             }.awaitAll()
-        }.filterNotNull().sortedBy { it.time }
+        }.filterNotNull().let { RadarIndex.dedupeCast(it) }
     } catch (e: Exception) {
         emptyList() // no model frames: the loop is past-only
     }

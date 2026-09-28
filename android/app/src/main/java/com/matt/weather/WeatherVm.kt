@@ -54,6 +54,10 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
 
     private var searchJob: Job? = null
     private var loadJob: Job? = null
+    private var radarLoad: Job? = null
+    private var radarJob: Job? = null
+    /** Last successful radar index fetch, epoch millis. */
+    private var radarAt = 0L
 
     init {
         // Paint whatever was cached before the network is asked, so the app is
@@ -116,7 +120,7 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
             val list = try {
                 WeatherApi.alerts(p.lat, p.lon)
             } catch (e: Exception) {
-                emptyList() // NWS is US-only and occasionally down; silent by design
+                emptyList() // any HTTP error = no alerts; NWS is occasionally down; silent by design
             }
             if (_state.value.place == p) _state.update { it.copy(alerts = list) }
         }
@@ -129,28 +133,55 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
             loadCells()
             return
         }
-        viewModelScope.launch {
+        // Resume, the timer and the refresh button can all land together.
+        if (radarLoad?.isActive == true) return
+        radarLoad = viewModelScope.launch {
             val idx = try {
                 WeatherApi.radar()
             } catch (e: Exception) {
                 null
             }
-            _state.update { it.copy(radar = idx) }
+            if (idx != null) {
+                radarAt = System.currentTimeMillis()
+                // An unchanged list leaves the overlays alone: no rebuild, no
+                // flicker. A failed refresh keeps a working loop on screen.
+                if (idx.key != _state.value.radar?.key) _state.update { it.copy(radar = idx) }
+            }
             loadCells()
         }
     }
 
-    /** Storm cells for the current place. Failure = no tracks, silently. */
+    /**
+     * Storm cells for the current place. A failed refresh keeps the tracks
+     * already drawn for this place; a first load that fails has none, silently.
+     */
     private fun loadCells() {
         viewModelScope.launch {
             val p = _state.value.place
             val list = if (!WeatherApi.inRadarBox(p.lat, p.lon)) emptyList() else try {
                 WeatherApi.stormCells(p.lat, p.lon)
             } catch (e: Exception) {
-                emptyList()
+                return@launch // setPlace already cleared another place's cells
             }
             if (_state.value.place == p) _state.update { it.copy(cells = list) }
         }
+    }
+
+    /** Frames and cells every [RADAR_REFRESH_MS] while in the foreground. */
+    private fun startRadarRefresh() {
+        radarJob?.cancel()
+        radarJob = viewModelScope.launch {
+            while (true) {
+                delay(RADAR_REFRESH_MS)
+                loadRadar()
+            }
+        }
+    }
+
+    /** Called when the app leaves the foreground: no timers while backgrounded. */
+    fun stopRadarRefresh() {
+        radarJob?.cancel()
+        radarJob = null
     }
 
     fun setPlace(p: Place) {
@@ -235,10 +266,19 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
     fun refreshIfStale() {
         val age = System.currentTimeMillis() - _state.value.fetchedAt
         if (_state.value.forecast == null || age > STALE_MS) refresh()
-        if (_state.value.radar == null) loadRadar()
+        // Catch up at once if the loop has gone stale, then resume the cadence.
+        if (System.currentTimeMillis() - radarAt > RADAR_REFRESH_MS) loadRadar()
+        startRadarRefresh()
+    }
+
+    /** The refresh button: forecast, alerts, radar frames and cells. */
+    fun refreshAll() {
+        refresh()
+        loadRadar()
     }
 
     private companion object {
         const val STALE_MS = 10 * 60 * 1000L
+        const val RADAR_REFRESH_MS = 5 * 60 * 1000L
     }
 }

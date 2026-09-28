@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
                 WeatherScreen(
                     state = state,
                     results = results,
-                    onRefresh = vm::refresh,
+                    onRefresh = vm::refreshAll,
                     onGps = {
                         if (hasLocationPermission()) {
                             vm.useGps()
@@ -64,6 +64,11 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         vm.refreshIfStale()
+    }
+
+    override fun onPause() {
+        vm.stopRadarRefresh()
+        super.onPause()
     }
 
     private fun hasLocationPermission(): Boolean =

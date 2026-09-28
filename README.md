@@ -26,7 +26,7 @@ from the National Weather Service and are the one thing here worth trusting.
 | Current | Temp, condition, feels-like, today's high/low, wind + direction, gust, humidity, UV, sunrise/sunset. |
 | Hourly | Next 48 hours. Horizontal scroll. Blue bar under each hour = chance of precip. |
 | 10 Day | Day and date, icon, max chance of precip, and a low→high bar scaled across the days shown. **Tap a day** to swap the hourly strip to that day; tap again for the rolling 48 h. The `5 day` / `10 day` button in the card header switches the length, and the choice is remembered. |
-| Radar | 10 observed NEXRAD frames (last 90 min, 10-minute steps) plus up to 12 HRRR model frames (~3 hr ahead, 15-minute steps), all on the NWS color scale. Opens **parked on the newest observed frame** — press play to run the loop. Every frame's tiles are fetched as soon as the radar loads, so the first loop draws. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. **Storm tracks**: moving cells (≥ 5 kt, ≥ 40 dBZ) within 300 km get a dot, a line to where they'll be in 60 minutes, ticks at 15 / 30 / 45 min and an arrowhead — red when the radar flags a tornado vortex signature or a ≥ 50% probability of severe hail. If a track passes within 8 km of the place, a line under the timeline says which cell and roughly when (`Cell 25 mi W, 46 mph, reaches here ≈ 3:02pm`). US only — elsewhere the timestamp reads `US only`. |
+| Radar | 10 observed NEXRAD frames (last 90 min, 10-minute steps) plus up to 12 HRRR model frames (~3 hr ahead, 15-minute steps), all on the NWS color scale. Opens **parked on the newest observed frame** — press play to run the loop. Every frame's tiles are fetched as soon as the radar loads, so the first loop draws. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. **Refresh**: frames and storm cells are re-fetched every 5 minutes while the app is on screen, at once on coming back to it if the last load is over 5 minutes old, and with the refresh button; nothing runs in the background. An unchanged frame list leaves the loop alone. A changed one is rebuilt: parked on the newest observed frame stays on the new newest one, otherwise it keeps the frame nearest in time, and a running loop keeps running. A failed refresh leaves the last frames and tracks on screen. **Storm tracks**: moving cells (≥ 5 kt, ≥ 40 dBZ) within 300 km get a dot, a line to where they'll be in 60 minutes, ticks at 15 / 30 / 45 min and an arrowhead — red when the radar flags a tornado vortex signature or a ≥ 50% probability of severe hail. If a track passes within 8 km of the place, a line under the timeline says which cell and roughly when (`Cell 25 mi W, 46 mph, reaches here ≈ 3:02pm`). US only — elsewhere the timestamp reads `US only`. |
 
 Location: tap the place name to search any city, or the crosshair/pin to use GPS.
 The last six places you looked at stay as chips in the search screen. Defaults to
@@ -52,8 +52,8 @@ straight over this one and keeps its data. No uninstall step, ever again.
 The published `weather.apk` is byte-for-byte the build running on the phone:
 
 ```
-version 1.2 (versionCode 3)
-sha256  20b68ffd4fd152fe6fa71614757cda5c3f9d9812873332ab71d02b6161fd8805
+version 1.3 (versionCode 4)
+sha256  50b1111fd42f082c4f4aafafbfe737a4335978f8475bd7846a143a4da4846393
 ```
 
 **The key is two files, neither of them in this repo, and neither recoverable:**
@@ -174,8 +174,16 @@ platform `Geocoder` instead, so it makes no third-party call for that.
 - **Storm tracks are NEXRAD storm attributes extrapolated in a straight line at
   constant speed.** Real cells turn, speed up, split and die; the arrival line is
   a rough heads-up, not a warning.
-- **Alerts are US-only.** `api.weather.gov` returns nothing outside the US; the
-  alert strip just stays hidden.
+- **Alerts are US-only.** `api.weather.gov` answers HTTP 400 outside its
+  coverage, so the alerts request is skipped entirely unless the place is inside
+  one of these boxes: lower 48 (lat 24-50, lon -125 to -66), Alaska (51-72,
+  -180 to -129), Hawaii (18-23, -161 to -154), Puerto Rico / USVI (17-19, -68 to
+  -64), Guam / CNMI (13-21, 144 to 146). They are boxes, not borders: a Canadian
+  or Mexican place inside the lower-48 box still asks, and any HTTP error there
+  reads as no alerts. Either way the alert strip just stays hidden.
+- **Radar refreshes only while the app is on screen.** Every 5 minutes, and at
+  once on return if the last load is over 5 minutes old. A loop left in the
+  background is not kept current until it is opened again.
 - **Radar timestamps are in the phone's timezone**, everything else is in the
   forecast location's local time. Only matters when looking at another time zone.
 - **Daily icon vs. daily precip %** can look inconsistent (an overcast icon next

@@ -152,19 +152,32 @@ private class TracksOverlay(private val dp: Float) : Overlay() {
     }
 }
 
-private class PinOverlay(var lat: Double, var lon: Double) : Overlay() {
+/**
+ * The web build's .mepin in dp: a 14 dp disc (border-box), 2.5 dp white
+ * border, accent fill inside it, 1 dp half-black halo outside it.
+ */
+private class PinOverlay(var lat: Double, var lon: Double, private val dp: Float) : Overlay() {
     private val fill = Paint().apply { isAntiAlias = true; color = 0xFF57A9FF.toInt() }
     private val ring = Paint().apply {
         isAntiAlias = true
         color = AColor.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 5f
+        strokeWidth = 2.5f * dp
+    }
+    private val halo = Paint().apply {
+        isAntiAlias = true
+        color = 0x80000000.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = 1f * dp
     }
 
     override fun draw(pCanvas: Canvas, pProjection: Projection) {
         val pt = pProjection.toPixels(GeoPoint(lat, lon), null)
-        pCanvas.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 9f, fill)
-        pCanvas.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 11f, ring)
+        val x = pt.x.toFloat()
+        val y = pt.y.toFloat()
+        pCanvas.drawCircle(x, y, 7.5f * dp, halo)
+        pCanvas.drawCircle(x, y, 5.75f * dp, ring)
+        pCanvas.drawCircle(x, y, 4.5f * dp, fill)
     }
 }
 
@@ -242,7 +255,25 @@ private fun buildMap(ctx: Context): MapView {
         overlayManager.tilesOverlay.setColorFilter(dimFilter(0.52f))
         overlayManager.tilesOverlay.loadingBackgroundColor = 0xFF0B1017.toInt()
         overlayManager.tilesOverlay.loadingLineColor = 0xFF121A23.toInt()
-        tag = RadarState()
+
+        // Tracks, labels and pin exist as long as the map does, frames or no
+        // frames. Radar frames are slotted in underneath them by syncMap.
+        val st = RadarState()
+        val dp = ctx.resources.displayMetrics.density
+        // Storm tracks above the radar, under the labels and the pin.
+        st.tracks = TracksOverlay(dp).also { overlays.add(it) }
+        // Place labels ride on top of the radar so towns stay readable.
+        overlays.add(
+            transparentTiles(
+                TilesOverlay(
+                    overlayProvider(this, EsriSource("EsriDarkRef", "World_Dark_Gray_Reference")),
+                    ctx
+                )
+            )
+        )
+        // Placed on the first syncMap, which always sees a new place key.
+        st.pin = PinOverlay(0.0, 0.0, dp).also { overlays.add(it) }
+        tag = st
     }
 }
 
@@ -258,10 +289,15 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, cells: List<
         st.pin?.let { it.lat = place.lat; it.lon = place.lon }
     }
 
-    val key = radar?.frames?.joinToString(",") { it.cacheKey }.orEmpty()
+    val key = radar?.key.orEmpty()
     if (key != st.frameKey) {
         st.frameKey = key
-        map.overlays.clear()
+        // Only the frame overlays are swapped; each old one's tile provider is
+        // detached so a refresh every few minutes does not pile up threads.
+        st.frames.forEach {
+            map.overlays.remove(it)
+            it.onDetach(map)
+        }
 
         // Every frame stays enabled and is hidden with a zero-alpha filter
         // instead. A disabled overlay never asks for its tiles, which left the
@@ -271,26 +307,8 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, cells: List<
                 TilesOverlay(overlayProvider(map, RadarSource(f)), ctx)
             ).apply { setColorFilter(FrameHidden) }
         }.orEmpty()
-        st.frames.forEach { map.overlays.add(it) }
-
-        // Storm tracks above the radar, under the labels and the pin.
-        val tracks = st.tracks ?: TracksOverlay(ctx.resources.displayMetrics.density)
-        st.tracks = tracks
-        map.overlays.add(tracks)
-
-        // Place labels ride on top of the radar so towns stay readable.
-        map.overlays.add(
-            transparentTiles(
-                TilesOverlay(
-                    overlayProvider(map, EsriSource("EsriDarkRef", "World_Dark_Gray_Reference")),
-                    ctx
-                )
-            )
-        )
-
-        val pin = PinOverlay(place.lat, place.lon)
-        st.pin = pin
-        map.overlays.add(pin)
+        // Underneath tracks, labels and pin: frames -> tracks -> labels -> pin.
+        map.overlays.addAll(0, st.frames)
 
         st.lastIdx = -1
     }

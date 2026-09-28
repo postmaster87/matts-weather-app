@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import com.matt.weather.UiState
 import com.matt.weather.data.Fmt
 import com.matt.weather.data.Place
+import com.matt.weather.data.RadarFrame
 import kotlinx.coroutines.delay
 
 @Composable
@@ -68,10 +69,16 @@ fun WeatherScreen(
 
     val frames = state.radar?.frames.orEmpty()
 
-    // Land on the newest observed frame, not the end of the nowcast.
+    // The frame list radarIdx was last placed against.
+    var shownFrames by remember { mutableStateOf<List<RadarFrame>>(emptyList()) }
+
+    // First load lands on the newest observed frame, not the end of the
+    // nowcast. A refresh that rebuilt the list keeps the user's place.
     LaunchedEffect(state.radar) {
-        if (frames.isNotEmpty()) {
-            radarIdx = frames.indexOfLast { !it.future }.coerceAtLeast(0)
+        val r = state.radar
+        if (r != null && frames.isNotEmpty()) {
+            radarIdx = r.idxAfterRefresh(shownFrames, radarIdx)
+            shownFrames = frames
         }
     }
 

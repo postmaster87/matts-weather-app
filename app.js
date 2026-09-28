@@ -205,10 +205,21 @@ async function loadWeather(showSpin, attempt) {
   }
 }
 
+// api.weather.gov answers HTTP 400 outside its coverage, so the request is
+// only made inside one of these boxes: lower 48, Alaska, Hawaii, Puerto
+// Rico / USVI, Guam / CNMI. Boxes, not borders — a Canadian or Mexican point
+// in the lower-48 box still asks, and its error reads as "no alerts".
+const NWS_BOXES = [
+  [24, 50, -125, -66], [51, 72, -180, -129], [18, 23, -161, -154], [17, 19, -68, -64], [13, 21, 144, 146]
+];
+const inNwsBox = (lat, lon) =>
+  NWS_BOXES.some((b) => lat >= b[0] && lat <= b[1] && lon >= b[2] && lon <= b[3]);
+
 async function loadAlerts() {
   const box = $('#alerts');
   box.hidden = true;
   box.innerHTML = '';
+  if (!inNwsBox(place.lat, place.lon)) return;
   try {
     const j = await getJSON(
       `https://api.weather.gov/alerts/active?point=${place.lat.toFixed(4)},${place.lon.toFixed(4)}`, 9000);
@@ -230,7 +241,7 @@ async function loadAlerts() {
         b.hidden = !b.hidden;
       });
     });
-  } catch (e) { /* NWS is US-only and occasionally down; silent by design */ }
+  } catch (e) { /* any HTTP error = no alerts; NWS is occasionally down; silent by design */ }
 }
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -371,8 +382,13 @@ function renderDaily() {
    ------------------------------------------------------------ */
 const radar = {
   map: null, frames: [], layers: {}, idx: 0, timer: null, playing: false, loaded: false,
-  cells: [], tracks: null
+  cells: [], cellsFor: null, tracks: null,
+  loadedAt: 0,        // last successful frame index fetch, ms
+  refreshTimer: null  // runs only while the page is visible
 };
+// Frames and cells are re-fetched this often while the page is on screen,
+// and on return to it once the last load is older than this.
+const RADAR_REFRESH_MS = 5 * 60 * 1000;
 
 // IEM serves both products through z10, so the map never upscales radar.
 const RADAR_NATIVE_Z = 10;
@@ -392,6 +408,31 @@ function utcStamp(ms) {
 }
 const pad4 = (n) => ('000' + n).slice(-4);
 const hrrrMetaURL = (m) => `${IEM}data/gis/images/4326/hrrr/refd_${pad4(m)}.json`;
+
+/* ---- frame lists: pure, no DOM, no Leaflet ---- */
+// While a new HRRR run is landing, two frames can come from different runs
+// and share a valid time. Keep the newer run's; v is the fixed-width init
+// stamp, so a string compare orders it.
+function dedupeCast(cast) {
+  const byTime = new Map();
+  cast.forEach((f) => {
+    const had = byTime.get(f.time);
+    if (!had || f.v > had.v) byTime.set(f.time, f);
+  });
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
+}
+// Same layers and cache stamps = same picture.
+const framesKey = (frames) => frames.map((f) => f.layer + '|' + f.v).join(',');
+const newestObserved = (frames) => Math.max(0, frames.map((f) => f.future).lastIndexOf(false));
+// Where to stand after the frame list is rebuilt: parked on the newest
+// observed frame stays parked there; anything else keeps the nearest time.
+function idxAfterRefresh(oldFrames, oldIdx, frames) {
+  if (!oldFrames.length || !oldFrames[oldIdx] || oldIdx === newestObserved(oldFrames)) return newestObserved(frames);
+  const t = oldFrames[oldIdx].time;
+  let best = 0;
+  frames.forEach((f, i) => { if (Math.abs(f.time - t) < Math.abs(frames[best].time - t)) best = i; });
+  return best;
+}
 
 /* ---- storm tracks: pure math, no DOM, no Leaflet ---- */
 const KM_PER_KT_HR = 1.852;
@@ -530,6 +571,7 @@ async function initRadar() {
   window.addEventListener('resize', () => radar.map.invalidateSize());
 
   await loadFrames();
+  if (document.visibilityState === 'visible') startRadarRefresh();
   radar.map.on('zoomstart', () => stopRadar());
   // Ticks and arrowheads are sized in screen pixels, so redraw per zoom.
   radar.map.on('zoomend', drawTracks);
@@ -547,13 +589,13 @@ async function hrrrFrames(t0) {
       if (init + m * 60000 > t0) mins.push(m);
     }
     const metas = await Promise.all(mins.map((m) => getJSON(hrrrMetaURL(m), 9000).catch(() => null)));
-    return metas.map((j, i) => {
+    return dedupeCast(metas.map((j, i) => {
       if (!j) return null;
       const t = Date.parse(j.model_forecast_utc), run = Date.parse(j.model_init_utc);
       if (!isFinite(t) || !isFinite(run) || t <= t0) return null;
       // Same layer name every run — the init stamp busts the tile cache.
       return { time: t / 1000, layer: `hrrr::REFD-F${pad4(mins[i])}-0`, v: utcStamp(run).slice(0, 10), future: true };
-    }).filter(Boolean).sort((a, b) => a.time - b.time);
+    }).filter(Boolean));
   } catch (e) {
     return []; // no model frames: the loop is past-only
   }
@@ -581,22 +623,48 @@ async function loadFrames() {
       const t = t0 - k * PAST_STEP_MIN * 60000;
       past.push({ time: t / 1000, layer: 'ridge::USCOMP-N0Q-' + utcStamp(t), v: '', future: false });
     }
-    const cast = await hrrrFrames(t0);
-    clearFrames();
-    radar.frames = past.concat(cast);
-    const s = $('#radarSlider');
-    s.max = radar.frames.length - 1;
-    radar.idx = past.length - 1; // newest observed frame
-    s.value = radar.idx;
-    showFrame(radar.idx);
-    // Parked on the newest observed frame until the play button is pressed.
-    // Every other frame starts fetching its tiles now, hidden, so the first
-    // loop has something to draw instead of filling in on the second pass.
-    radar.frames.forEach((f, i) => frameLayer(i));
+    const frames = past.concat(await hrrrFrames(t0));
+    radar.loadedAt = Date.now();
+    // An unchanged list leaves the layers alone: no rebuild, no flicker.
+    if (framesKey(frames) !== framesKey(radar.frames)) setFrames(frames);
   } catch (e) {
-    $('#radarTime').textContent = 'unavailable';
+    // A failed refresh keeps a working loop on screen.
+    if (!radar.frames.length) $('#radarTime').textContent = 'unavailable';
   }
   loadCells();
+}
+
+function setFrames(frames) {
+  const wasPlaying = radar.playing;
+  // First load lands on the newest observed frame and stays parked there
+  // until the play button is pressed.
+  const idx = idxAfterRefresh(radar.frames, radar.idx, frames);
+  clearFrames();
+  radar.frames = frames;
+  const s = $('#radarSlider');
+  s.max = radar.frames.length - 1;
+  s.value = idx;
+  showFrame(idx);
+  // Every other frame starts fetching its tiles now, hidden, so the first
+  // loop has something to draw instead of filling in on the second pass.
+  radar.frames.forEach((f, i) => frameLayer(i));
+  if (wasPlaying) playRadar();
+}
+
+function startRadarRefresh() {
+  stopRadarRefresh();
+  radar.refreshTimer = setInterval(loadFrames, RADAR_REFRESH_MS);
+}
+function stopRadarRefresh() {
+  clearInterval(radar.refreshTimer);
+  radar.refreshTimer = null;
+}
+// Back on screen: catch up at once if the loop has gone stale, then resume
+// the 5-minute cadence.
+function resumeRadar() {
+  if (!radar.map) return;
+  if (Date.now() - radar.loadedAt > RADAR_REFRESH_MS) loadFrames();
+  startRadarRefresh();
 }
 
 function frameLayer(i) {
@@ -621,17 +689,21 @@ function showFrame(i) {
   $('#radarSlider').value = i;
 }
 
-// Storm cells for the current place. Failure = no tracks, silently.
+// Storm cells for the current place. A failed refresh keeps the tracks
+// already drawn for this place; a first load that fails has none, silently.
 async function loadCells() {
   const p = place;
   let cells = [];
   if (inRadarBox(p.lat, p.lon)) {
     try {
       cells = pickCells(parseCells(await getJSON(IEM + 'geojson/nexrad_attr.geojson', 12000)), p.lat, p.lon);
-    } catch (e) { /* no tracks */ }
+    } catch (e) {
+      if (radar.cellsFor === p) return;
+    }
   }
   if (place !== p) return; // the place changed while this was in flight
   radar.cells = cells;
+  radar.cellsFor = p;
   drawTracks();
 }
 
@@ -796,7 +868,10 @@ function boot() {
   $('#placeBtn').addEventListener('click', openSearch);
   $('#searchClose').addEventListener('click', closeSearch);
   $('#gpsBtn').addEventListener('click', useGPS);
-  $('#refreshBtn').addEventListener('click', () => loadWeather(true));
+  $('#refreshBtn').addEventListener('click', () => {
+    loadWeather(true);
+    if (radar.map) loadFrames(); // frames + cells
+  });
   $('#searchInput').addEventListener('input', (e) => {
     clearTimeout(searchTimer);
     const v = e.target.value;
@@ -848,10 +923,14 @@ function boot() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       if (Date.now() - lastFetch > STALE_MS) loadWeather(false);
+      resumeRadar();
     } else {
       stopRadar();
+      stopRadarRefresh(); // no timers while hidden
     }
   });
+  // Restored from the back/forward cache: no visibilitychange on some builds.
+  window.addEventListener('pageshow', (e) => { if (e.persisted) resumeRadar(); });
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
