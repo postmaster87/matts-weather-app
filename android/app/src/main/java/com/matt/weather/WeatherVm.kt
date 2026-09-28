@@ -32,6 +32,8 @@ data class UiState(
     val failed: Boolean = false,
     /** -1 = rolling 48 h, otherwise the index of the selected day. */
     val selectedDay: Int = -1,
+    /** Length of the daily card: 10 or 5. */
+    val dayCount: Int = 10,
     val message: String? = null
 )
 
@@ -39,7 +41,9 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
 
     private val store = Store(app)
 
-    private val _state = MutableStateFlow(UiState(place = store.place, recents = store.recents))
+    private val _state = MutableStateFlow(
+        UiState(place = store.place, recents = store.recents, dayCount = store.dayCount)
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val _results = MutableStateFlow<List<Place>>(emptyList())
@@ -145,6 +149,14 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
 
     fun selectDay(i: Int) {
         _state.update { it.copy(selectedDay = if (it.selectedDay == i || i == 0) -1 else i) }
+    }
+
+    fun toggleDays() {
+        val n = if (_state.value.dayCount == 10) 5 else 10
+        store.dayCount = n
+        _state.update {
+            it.copy(dayCount = n, selectedDay = if (it.selectedDay >= n) -1 else it.selectedDay)
+        }
     }
 
     fun search(q: String) {

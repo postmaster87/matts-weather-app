@@ -33,6 +33,13 @@ class Store(ctx: Context) {
             prefs.edit().putString(KEY_RECENTS, a.toString()).apply()
         }
 
+    /** Length of the daily card: 10 or 5. */
+    var dayCount: Int
+        get() = if (prefs.getInt(KEY_DAYS, 10) == 5) 5 else 10
+        set(value) {
+            prefs.edit().putInt(KEY_DAYS, value).apply()
+        }
+
     fun pushRecent(p: Place) {
         val kept = recents.filterNot { abs(it.lat - p.lat) < 0.02 && abs(it.lon - p.lon) < 0.02 }
         recents = (listOf(p) + kept).take(6)
@@ -63,6 +70,7 @@ class Store(ctx: Context) {
     private companion object {
         const val KEY_PLACE = "place"
         const val KEY_RECENTS = "recents"
+        const val KEY_DAYS = "days"
         const val KEY_CACHE = "cache"
         const val KEY_CACHE_PLACE = "cache_place"
         const val KEY_CACHE_AT = "cache_at"

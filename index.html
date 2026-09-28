@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Weather">
-<meta name="description" content="Hourly, 5-day, and radar. No ads, no trackers, no BS.">
+<meta name="description" content="Hourly, 10-day, and radar. No ads, no trackers, no BS.">
 <title>Weather</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
@@ -57,7 +57,11 @@
   </section>
 
   <section class="card">
-    <div class="cardhead"><h2>5 Day</h2><span class="note">tap a day</span></div>
+    <div class="cardhead">
+      <h2 id="dailyTitle">10 Day</h2>
+      <span class="note grow">tap a day</span>
+      <button id="dailyToggle" class="txtbtn">5 day</button>
+    </div>
     <div id="daily" class="daily"><div class="skeleton row"></div></div>
   </section>
 

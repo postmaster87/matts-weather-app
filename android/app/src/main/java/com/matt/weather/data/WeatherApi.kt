@@ -14,7 +14,7 @@ object WeatherApi {
             "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset," +
             "precipitation_probability_max" +
             "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch" +
-            "&timezone=auto&forecast_days=7"
+            "&timezone=auto&forecast_days=10"
 
     suspend fun forecast(lat: Double, lon: Double): Forecast =
         parseForecast(Net.getString(forecastUrl(lat, lon)))

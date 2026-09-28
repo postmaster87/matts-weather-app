@@ -57,6 +57,7 @@ fun WeatherScreen(
     onQuery: (String) -> Unit,
     onPick: (Place) -> Unit,
     onSelectDay: (Int) -> Unit,
+    onToggleDays: () -> Unit,
     onClearMessage: () -> Unit
 ) {
     var searching by rememberSaveable { mutableStateOf(false) }
@@ -224,12 +225,14 @@ fun WeatherScreen(
                             from = from,
                             to = to,
                             nowIndex = if (sel > 0) -1 else nowIdx,
-                            title = if (sel > 0 && day != null) "Hourly · ${Fmt.dow(day.date)}" else "Hourly",
+                            title = if (sel > 0 && day != null) "Hourly · ${Fmt.dow(day.date)} ${Fmt.dom(day.date)}" else "Hourly",
                             note = if (sel > 0) "tap day again for 48h" else "next 48 h"
                         )
                     }
 
-                    item { DailyCard(f.days, state.selectedDay, onSelectDay) }
+                    item {
+                        DailyCard(f.days, state.dayCount, state.selectedDay, onSelectDay, onToggleDays)
+                    }
                 }
 
                 item {

@@ -1,7 +1,7 @@
 'use strict';
 
 /* ============================================================
-   Weather — hourly / 5-day / radar. No ads, no trackers.
+   Weather — hourly / 10-day / radar. No ads, no trackers.
    Data: Open-Meteo (forecast + geocoding), NWS (alerts),
          RainViewer (radar tiles), CARTO (basemap).
    No API keys anywhere. All requests are anonymous GETs.
@@ -11,6 +11,7 @@ const DEFAULT_PLACE = { name: 'Ames', region: 'Iowa', country: 'US', lat: 42.030
 const LS_PLACE = 'wx.place';
 const LS_RECENTS = 'wx.recents';
 const LS_CACHE = 'wx.cache';
+const LS_DAYS = 'wx.days';
 const STALE_MS = 10 * 60 * 1000;
 
 const $ = (s) => document.querySelector(s);
@@ -20,6 +21,7 @@ const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 let place = null;
 let wxData = null;
 let selectedDay = -1;      // -1 = rolling 48h view
+let dayCount = 10;         // daily card length: 10 or 5
 let lastFetch = 0;
 
 /* ------------------------------------------------------------
@@ -121,6 +123,9 @@ function dowOf(iso) {
   const p = iso.slice(0, 10).split('-');
   return DOW[new Date(+p[0], +p[1] - 1, +p[2]).getDay()];
 }
+// Day of the month, "5". Ten days holds the same weekday twice, so a bare
+// "Mon" is not enough to tell the rows apart.
+const domOf = (iso) => parseInt(iso.slice(8, 10), 10);
 function h12(iso) {
   const h = hourOf(iso);
   return (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? 'a' : 'p');
@@ -158,7 +163,7 @@ function forecastURL(lat, lon) {
     wind_speed_unit: 'mph',
     precipitation_unit: 'inch',
     timezone: 'auto',
-    forecast_days: '7'
+    forecast_days: '10'
   });
   return 'https://api.open-meteo.com/v1/forecast?' + p;
 }
@@ -288,7 +293,7 @@ function renderHourly() {
     const day = wxData.daily.time[selectedDay];
     from = h.time.findIndex((t) => dateOf(t) === day);
     to = from + 24;
-    title = 'Hourly &middot; ' + dowOf(day);
+    title = 'Hourly &middot; ' + dowOf(day) + ' ' + domOf(day);
     note = 'tap day again for 48h';
   } else {
     from = start;
@@ -322,7 +327,9 @@ function renderHourly() {
 
 function renderDaily() {
   const d = wxData.daily;
-  const n = Math.min(5, d.time.length);
+  const n = Math.min(dayCount, d.time.length);
+  $('#dailyTitle').textContent = dayCount + ' Day';
+  $('#dailyToggle').textContent = dayCount === 10 ? '5 day' : '10 day';
   let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < n; i++) {
     lo = Math.min(lo, d.temperature_2m_min[i]);
@@ -336,7 +343,7 @@ function renderDaily() {
     const w = Math.max(6, ((hg - l) / span) * 100);
     const pp = d.precipitation_probability_max[i] || 0;
     html += `<div class="dr${selectedDay === i ? ' sel' : ''}" data-i="${i}">
-      <div class="dow">${i === 0 ? 'Today' : dowOf(d.time[i])}</div>
+      <div class="dow">${i === 0 ? 'Today' : dowOf(d.time[i]) + ' <span class="dt">' + domOf(d.time[i]) + '</span>'}</div>
       ${icon(d.weather_code[i], 1, 'ic')}
       <div class="pp">${pp >= 10 ? pp + '%' : ''}</div>
       <div class="lo">${Math.round(l)}&deg;</div>
@@ -423,6 +430,9 @@ async function loadFrames() {
     s.value = radar.idx;
     showFrame(radar.idx);
     // Parked on the newest observed frame until the play button is pressed.
+    // Every other frame starts fetching its tiles now, hidden, so the first
+    // loop has something to draw instead of filling in on the second pass.
+    radar.frames.forEach((f, i) => frameLayer(i));
   } catch (e) {
     $('#radarTime').textContent = 'unavailable';
   }
@@ -444,7 +454,6 @@ function showFrame(i) {
   radar.idx = i;
   frameLayer(i).setOpacity(0.82);
   Object.keys(radar.layers).forEach((k) => { if (+k !== i) radar.layers[k].setOpacity(0); });
-  if (radar.frames[i + 1]) frameLayer(i + 1);          // preload the next one
   const f = radar.frames[i];
   $('#radarTime').textContent = (f.future ? '+' : '') + clockLocal(f.time * 1000);
   $('#radarSlider').value = i;
@@ -457,6 +466,9 @@ function playRadar() {
   radar.timer = setInterval(() => {
     let n = radar.idx + 1;
     if (n >= radar.frames.length) n = 0;
+    // Hold on the current frame while the next one's tiles are still in
+    // flight (first loop on a slow connection, or right after a pan).
+    if (frameLayer(n).isLoading()) return;
     showFrame(n);
   }, 520);
 }
@@ -576,6 +588,15 @@ function boot() {
     clearTimeout(searchTimer);
     const v = e.target.value;
     searchTimer = setTimeout(() => runSearch(v), 280);
+  });
+  try { if (localStorage.getItem(LS_DAYS) === '5') dayCount = 5; } catch (e) {}
+  $('#dailyToggle').addEventListener('click', () => {
+    dayCount = dayCount === 10 ? 5 : 10;
+    try { localStorage.setItem(LS_DAYS, '' + dayCount); } catch (e) {}
+    if (!wxData) return;
+    if (selectedDay >= dayCount) selectedDay = -1;
+    renderDaily();
+    renderHourly();
   });
   $('#radarPlay').addEventListener('click', () => (radar.playing ? stopRadar() : playRadar()));
   $('#radarSlider').addEventListener('input', (e) => { stopRadar(); showFrame(+e.target.value); });

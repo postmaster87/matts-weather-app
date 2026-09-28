@@ -41,6 +41,13 @@ object Fmt {
         "—"
     }
 
+    /**
+     * Day of the month, "5". Ten days holds the same weekday twice, so a bare
+     * "Mon" is not enough to tell the rows apart.
+     */
+    fun dom(iso: String): String =
+        iso.substring(8, 10).toIntOrNull()?.toString() ?: ""
+
     /** "1:40pm" in the phone's own time zone. */
     fun clockDevice(millis: Long): String {
         val c = Calendar.getInstance().apply { timeInMillis = millis }

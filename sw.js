@@ -2,7 +2,7 @@
    no signal. Weather data is never cached here — app.js keeps the last
    payload in localStorage and shows it flagged as stale. */
 
-const CACHE = 'wx-shell-v1';
+const CACHE = 'wx-shell-v2';
 const SHELL = [
   './',
   './index.html',

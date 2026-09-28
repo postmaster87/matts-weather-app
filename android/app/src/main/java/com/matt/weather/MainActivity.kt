@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
                     onQuery = vm::search,
                     onPick = vm::setPlace,
                     onSelectDay = vm::selectDay,
+                    onToggleDays = vm::toggleDays,
                     onClearMessage = vm::clearMessage
                 )
             }

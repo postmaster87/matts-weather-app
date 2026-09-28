@@ -134,6 +134,19 @@ private fun transparentTiles(o: TilesOverlay) = o.apply {
     loadingLineColor = AColor.TRANSPARENT
 }
 
+private val FrameShown = alphaFilter(0.85f)
+private val FrameHidden = alphaFilter(0f)
+
+/**
+ * Only the map's own provider tells the map when a tile lands. An overlay's
+ * provider has to be wired up by hand, or its tiles sit downloaded and
+ * undrawn until something else happens to repaint the map.
+ */
+private fun overlayProvider(map: MapView, source: OnlineTileSourceBase) =
+    MapTileProviderBasic(map.context, source).apply {
+        tileRequestCompleteHandlers.add(map.tileRequestCompleteHandler)
+    }
+
 private fun buildMap(ctx: Context): MapView {
     Configuration.getInstance().apply {
         load(ctx, ctx.getSharedPreferences("osmdroid", Context.MODE_PRIVATE))
@@ -179,15 +192,15 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
         st.frameKey = key
         map.overlays.clear()
 
+        // Every frame stays enabled and is hidden with a zero-alpha filter
+        // instead. A disabled overlay never asks for its tiles, which left the
+        // first loop blank while each frame fetched on its first showing.
         st.frames = radar?.frames?.mapIndexed { i, f ->
             transparentTiles(
                 TilesOverlay(
-                    MapTileProviderBasic(ctx, RadarSource("rv$i", radar.host + f.path)), ctx
+                    overlayProvider(map, RadarSource("rv$i", radar.host + f.path)), ctx
                 )
-            ).apply {
-                setColorFilter(alphaFilter(0.85f))
-                isEnabled = false
-            }
+            ).apply { setColorFilter(FrameHidden) }
         }.orEmpty()
         st.frames.forEach { map.overlays.add(it) }
 
@@ -195,9 +208,7 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
         map.overlays.add(
             transparentTiles(
                 TilesOverlay(
-                    MapTileProviderBasic(
-                        ctx, EsriSource("EsriDarkRef", "World_Dark_Gray_Reference")
-                    ),
+                    overlayProvider(map, EsriSource("EsriDarkRef", "World_Dark_Gray_Reference")),
                     ctx
                 )
             )
@@ -212,7 +223,9 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
 
     if (idx != st.lastIdx) {
         st.lastIdx = idx
-        st.frames.forEachIndexed { i, o -> o.isEnabled = (i == idx) }
+        st.frames.forEachIndexed { i, o ->
+            o.setColorFilter(if (i == idx) FrameShown else FrameHidden)
+        }
     }
     map.invalidate()
 }

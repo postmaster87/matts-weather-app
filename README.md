@@ -1,6 +1,6 @@
 # Weather
 
-Current conditions, 48-hour hourly, 5-day, and animated radar. No ads, no trackers,
+Current conditions, 48-hour hourly, 10-day, and animated radar. No ads, no trackers,
 no analytics, no cookie banner, no account, no API keys.
 
 Two builds, same data and same look:
@@ -25,8 +25,8 @@ from the National Weather Service and are the one thing here worth trusting.
 | Alerts | Active NWS watches/warnings for the exact point. Tap one to read the full text. Hidden when there are none. |
 | Current | Temp, condition, feels-like, today's high/low, wind + direction, gust, humidity, UV, sunrise/sunset. |
 | Hourly | Next 48 hours. Horizontal scroll. Blue bar under each hour = chance of precip. |
-| 5 Day | Day, icon, max chance of precip, and a low→high bar scaled across the whole 5 days. **Tap a day** to swap the hourly strip to that day; tap again for the rolling 48 h. |
-| Radar | 10 past frames (~1 hr) plus RainViewer's 30-minute nowcast. Opens **parked on the newest observed frame** — press play to run the loop. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. |
+| 10 Day | Day and date, icon, max chance of precip, and a low→high bar scaled across the days shown. **Tap a day** to swap the hourly strip to that day; tap again for the rolling 48 h. The `5 day` / `10 day` button in the card header switches the length, and the choice is remembered. |
+| Radar | 10 past frames (~1 hr) plus RainViewer's 30-minute nowcast. Opens **parked on the newest observed frame** — press play to run the loop. Every frame's tiles are fetched as soon as the radar loads, so the first loop draws. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. |
 
 Location: tap the place name to search any city, or the crosshair/pin to use GPS.
 The last six places you looked at stay as chips in the search screen. Defaults to
@@ -52,7 +52,8 @@ straight over this one and keeps its data. No uninstall step, ever again.
 The published `weather.apk` is byte-for-byte the build running on the phone:
 
 ```
-sha256  cc675bf08ce52a5c52e607854938f7440d6fa0ade59a01a53f8b0ca56d153d33
+version 1.1 (versionCode 2)
+sha256  46aeba040b5466c382b0485d2ed91e33be90ebc55a72d12942e6caacbca10c41
 ```
 
 **The key is two files, neither of them in this repo, and neither recoverable:**
@@ -174,6 +175,8 @@ platform `Geocoder` instead, so it makes no third-party call for that.
 - **Daily icon vs. daily precip %** can look inconsistent (an overcast icon next
   to 89%). Both come from Open-Meteo as-is: the icon is the day's dominant
   condition, the % is the single wettest hour. Not smoothed over.
+- **Days 8-10 are the loosest numbers on the screen.** Open-Meteo can return no
+  precip % that far out, so a row can show a rain icon with no percentage.
 - Open-Meteo is a model blend, not a nowcast. Treat the hourly numbers as
   directionally right, not exact.
 - The Android app is **not on Google Play** and has no update mechanism — a new

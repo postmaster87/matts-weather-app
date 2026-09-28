@@ -280,15 +280,31 @@ private fun HourCell(h: Hour, isNow: Boolean) {
 /* ----------------------------------------------------------------- daily */
 
 @Composable
-fun DailyCard(days: List<Day>, selected: Int, onSelect: (Int) -> Unit) {
-    val shown = days.take(5)
+fun DailyCard(
+    days: List<Day>,
+    count: Int,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    onToggleCount: () -> Unit
+) {
+    val shown = days.take(count)
     if (shown.isEmpty()) return
     val lo = shown.minOf { it.min }
     val hi = shown.maxOf { it.max }
     val span = max(1.0, hi - lo)
 
     WxCard {
-        CardHead("5 Day", "tap a day")
+        CardHead("$count Day", "tap a day") {
+            Text(
+                if (count == 10) "5 day" else "10 day",
+                color = Wx.Accent, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .padding(start = 8.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onToggleCount() }
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
         shown.forEachIndexed { i, d ->
             if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Wx.Line))
             Row(
@@ -301,9 +317,15 @@ fun DailyCard(days: List<Day>, selected: Int, onSelect: (Int) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    if (i == 0) "Today" else Fmt.dow(d.date),
+                    if (i == 0) AnnotatedString("Today") else buildAnnotatedString {
+                        append(Fmt.dow(d.date))
+                        withStyle(SpanStyle(color = Wx.Fg3, fontWeight = FontWeight.Normal)) {
+                            append(" " + Fmt.dom(d.date))
+                        }
+                    },
                     color = Wx.Fg, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.width(52.dp)
+                    maxLines = 1,
+                    modifier = Modifier.width(66.dp)
                 )
                 WeatherIcon(d.code, true, Modifier.size(28.dp))
                 Text(
