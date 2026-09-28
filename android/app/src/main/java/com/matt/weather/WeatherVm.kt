@@ -9,6 +9,7 @@ import com.matt.weather.data.Loc
 import com.matt.weather.data.Place
 import com.matt.weather.data.RadarIndex
 import com.matt.weather.data.Store
+import com.matt.weather.data.StormCell
 import com.matt.weather.data.WeatherApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -25,6 +26,8 @@ data class UiState(
     val forecast: Forecast? = null,
     val alerts: List<Alert> = emptyList(),
     val radar: RadarIndex? = null,
+    /** Storm cells picked for [place]; empty when none, outside the US, or on failure. */
+    val cells: List<StormCell> = emptyList(),
     val loading: Boolean = false,
     /** Showing a cached payload because the network did not answer. */
     val stale: Boolean = false,
@@ -120,6 +123,12 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadRadar() {
+        val p = _state.value.place
+        // IEM radar is US-only; the card says so instead of fetching.
+        if (!WeatherApi.inRadarBox(p.lat, p.lon)) {
+            loadCells()
+            return
+        }
         viewModelScope.launch {
             val idx = try {
                 WeatherApi.radar()
@@ -127,6 +136,20 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
                 null
             }
             _state.update { it.copy(radar = idx) }
+            loadCells()
+        }
+    }
+
+    /** Storm cells for the current place. Failure = no tracks, silently. */
+    private fun loadCells() {
+        viewModelScope.launch {
+            val p = _state.value.place
+            val list = if (!WeatherApi.inRadarBox(p.lat, p.lon)) emptyList() else try {
+                WeatherApi.stormCells(p.lat, p.lon)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            if (_state.value.place == p) _state.update { it.copy(cells = list) }
         }
     }
 
@@ -139,12 +162,16 @@ class WeatherVm(app: Application) : AndroidViewModel(app) {
                 recents = store.recents,
                 selectedDay = -1,
                 alerts = emptyList(),
+                cells = emptyList(),
                 forecast = store.cachedFor(p)?.first,
                 stale = store.cachedFor(p) != null
             )
         }
         _results.value = emptyList()
         refresh()
+        // Frames are the same for any US place; only a first load (or a move in
+        // from outside the coverage box) needs them fetched. Cells are per place.
+        if (_state.value.radar == null) loadRadar() else loadCells()
     }
 
     fun selectDay(i: Int) {

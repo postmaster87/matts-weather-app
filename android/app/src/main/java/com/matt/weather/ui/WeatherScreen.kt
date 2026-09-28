@@ -119,6 +119,7 @@ fun WeatherScreen(
             RadarSection(
                 place = state.place,
                 radar = state.radar,
+                cells = state.cells,
                 idx = radarIdx,
                 playing = playing,
                 onIdx = { radarIdx = it; playing = false },
@@ -250,6 +251,7 @@ fun WeatherScreen(
                         RadarSection(
                             place = state.place,
                             radar = state.radar,
+                            cells = state.cells,
                             idx = radarIdx,
                             playing = playing,
                             onIdx = { radarIdx = it; playing = false },
@@ -274,7 +276,7 @@ fun WeatherScreen(
                             color = if (state.stale) Wx.Warm else Wx.Fg3, fontSize = 11.sp
                         )
                         Spacer(Modifier.weight(1f))
-                        Text("Open-Meteo · RainViewer · NWS · Esri", color = Wx.Fg3, fontSize = 11.sp)
+                        Text("Open-Meteo · IEM · NWS · Esri", color = Wx.Fg3, fontSize = 11.sp)
                     }
                 }
             }

@@ -2,7 +2,7 @@
    no signal. Weather data is never cached here — app.js keeps the last
    payload in localStorage and shows it flagged as stale. */
 
-const CACHE = 'wx-shell-v2';
+const CACHE = 'wx-shell-v3';
 const SHELL = [
   './',
   './index.html',
@@ -37,7 +37,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
 
   // Live data and map tiles always go to the network.
-  if (/api\.open-meteo\.com|geocoding-api|api\.weather\.gov|rainviewer\.com|basemaps\.cartocdn\.com|bigdatacloud/.test(url.hostname + url.pathname)) return;
+  if (/api\.open-meteo\.com|geocoding-api|api\.weather\.gov|mesonet\.agron\.iastate\.edu|basemaps\.cartocdn\.com|bigdatacloud/.test(url.hostname + url.pathname)) return;
 
   // Shell: serve from cache, refresh in the background.
   e.respondWith(

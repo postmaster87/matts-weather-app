@@ -3,7 +3,7 @@
 /* ============================================================
    Weather — hourly / 10-day / radar. No ads, no trackers.
    Data: Open-Meteo (forecast + geocoding), NWS (alerts),
-         RainViewer (radar tiles), CARTO (basemap).
+         Iowa State IEM (radar, HRRR, storm cells), Esri (basemap).
    No API keys anywhere. All requests are anonymous GETs.
    ============================================================ */
 
@@ -364,16 +364,129 @@ function renderDaily() {
 }
 
 /* ------------------------------------------------------------
-   Radar — RainViewer frames over a dark CARTO basemap.
+   Radar — Iowa State IEM frames over a dark Esri basemap.
+   Past = NEXRAD composite (observed), future = HRRR simulated
+   reflectivity (model), both on the NWS color scale.
    Built lazily the first time the card scrolls into view.
    ------------------------------------------------------------ */
-const radar = { map: null, host: '', frames: [], layers: {}, idx: 0, timer: null, playing: false, loaded: false };
+const radar = {
+  map: null, frames: [], layers: {}, idx: 0, timer: null, playing: false, loaded: false,
+  cells: [], tracks: null
+};
 
-// RainViewer's free tiles only exist through zoom 7; anything deeper returns a
-// "Zoom Level Not Supported" placeholder. Let Leaflet upscale z7 instead.
-const RADAR_NATIVE_Z = 7;
+// IEM serves both products through z10, so the map never upscales radar.
+const RADAR_NATIVE_Z = 10;
 const RADAR_MAX_Z = 10;
 const RADAR_Z = 7;
+const IEM = 'https://mesonet.agron.iastate.edu/';
+const IEM_TILES = IEM + 'cache/tile.py/1.0.0/';
+const PAST_FRAMES = 10, PAST_STEP_MIN = 10, CAST_FRAMES = 12, HRRR_STEP_MIN = 15, HRRR_MAX_MIN = 1080;
+// The US composite and HRRR only cover the lower 48 and a margin around it.
+const inRadarBox = (lat, lon) => lat >= 21 && lat <= 53 && lon >= -130 && lon <= -60;
+
+// "202609281925" — the UTC stamp IEM puts in composite layer names.
+function utcStamp(ms) {
+  const d = new Date(ms);
+  return d.getUTCFullYear() + pad2(d.getUTCMonth() + 1) + pad2(d.getUTCDate()) +
+    pad2(d.getUTCHours()) + pad2(d.getUTCMinutes());
+}
+const pad4 = (n) => ('000' + n).slice(-4);
+const hrrrMetaURL = (m) => `${IEM}data/gis/images/4326/hrrr/refd_${pad4(m)}.json`;
+
+/* ---- storm tracks: pure math, no DOM, no Leaflet ---- */
+const KM_PER_KT_HR = 1.852;
+const R_EARTH_KM = 6371;
+const rad = (d) => d * Math.PI / 180;
+const deg = (r) => r * 180 / Math.PI;
+
+// NEXRAD storm attributes give drct as the direction the cell is moving FROM
+// (meteorological convention). Checked against the live feed 2026-09-28: 33 of
+// 35 cells moved along drct + 180 between two snapshots, 0 along drct.
+const stormHeading = (drct) => (drct + 180) % 360;
+
+function distKm(lat1, lon1, lat2, lon2) {
+  const a = Math.sin(rad(lat2 - lat1) / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lon2 - lon1) / 2) ** 2;
+  return 2 * R_EARTH_KM * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+// Initial great-circle bearing from point 1 to point 2, 0-360.
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const y = Math.sin(rad(lon2 - lon1)) * Math.cos(rad(lat2));
+  const x = Math.cos(rad(lat1)) * Math.sin(rad(lat2)) -
+    Math.sin(rad(lat1)) * Math.cos(rad(lat2)) * Math.cos(rad(lon2 - lon1));
+  return (deg(Math.atan2(y, x)) + 360) % 360;
+}
+// Point reached going km along a great circle on the given bearing. [lat, lon]
+function destPoint(lat, lon, brg, km) {
+  const d = km / R_EARTH_KM, b = rad(brg), p1 = rad(lat), l1 = rad(lon);
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [deg(p2), ((deg(l2) + 540) % 360) - 180];
+}
+// Where the cell will be after min minutes. [lat, lon]
+const cellAt = (c, min) => destPoint(c.lat, c.lon, c.heading, c.sknt * KM_PER_KT_HR * min / 60);
+
+const COMPASS8 = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const compass8 = (b) => COMPASS8[Math.round((((b % 360) + 360) % 360) / 45) % 8];
+
+// GeoJSON feed -> flat cell list. Anything malformed is skipped.
+function parseCells(j) {
+  return ((j && j.features) || []).map((f) => {
+    const p = f.properties || {}, g = (f.geometry && f.geometry.coordinates) || [];
+    return {
+      lat: +g[1], lon: +g[0], dbz: +p.max_dbz, sknt: +p.sknt, drct: +p.drct,
+      heading: stormHeading(+p.drct), posh: +p.posh || 0,
+      tvs: p.tvs || 'NONE', valid: Date.parse(p.valid)
+    };
+  }).filter((c) => isFinite(c.lat) && isFinite(c.lon) && isFinite(c.dbz) && isFinite(c.sknt) && isFinite(c.drct));
+}
+
+// Moving (>= 5 kt), strong (>= 40 dBZ), within 300 km. Neighbouring radars
+// report the same storm, so within 12 km only the strongest is kept. Then
+// the 40 nearest to the place.
+function pickCells(cells, lat, lon) {
+  const near = cells
+    .filter((c) => c.sknt >= 5 && c.dbz >= 40)
+    .map((c) => Object.assign({}, c, { km: distKm(lat, lon, c.lat, c.lon) }))
+    .filter((c) => c.km <= 300)
+    .sort((a, b) => b.dbz - a.dbz || a.km - b.km);
+  const kept = [];
+  near.forEach((c) => {
+    if (!kept.some((k) => distKm(k.lat, k.lon, c.lat, c.lon) < 12)) kept.push(c);
+  });
+  return kept.sort((a, b) => a.km - b.km).slice(0, 40);
+}
+
+// Closest the 0-60 minute track gets to the place: { km, min }. Sampled every
+// quarter minute — under 0.5 km of travel between samples at 60 kt.
+function closestApproach(c, lat, lon) {
+  let best = { km: Infinity, min: 0 };
+  for (let m = 0; m <= 60; m += 0.25) {
+    const p = cellAt(c, m), km = distKm(lat, lon, p[0], p[1]);
+    if (km < best.km) best = { km, min: m };
+  }
+  return best;
+}
+
+// The soonest cell whose track passes within 8 km, or null.
+function arrival(cells, lat, lon) {
+  let best = null;
+  cells.forEach((c) => {
+    const a = closestApproach(c, lat, lon);
+    if (a.km > 8) return;
+    const t = (isFinite(c.valid) ? c.valid : Date.now()) + a.min * 60000;
+    if (!best || t < best.t) best = { c, t };
+  });
+  if (!best) return null;
+  const c = best.c;
+  return {
+    t: best.t,
+    mi: Math.round(distKm(lat, lon, c.lat, c.lon) / 1.609344),
+    dir: compass8(bearingDeg(lat, lon, c.lat, c.lon)),
+    mph: Math.round(c.sknt * 1.150779)
+  };
+}
+const severe = (c) => c.tvs !== 'NONE' || c.posh >= 50;
 
 async function initRadar() {
   if (radar.loaded || typeof L === 'undefined') return;
@@ -394,11 +507,16 @@ async function initRadar() {
   const ESRI = 'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_';
   L.tileLayer(ESRI + 'Base/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: RADAR_MAX_Z, minZoom: 4, zIndex: 100, className: 'basemap-dim',
-    attribution: 'Esri &middot; RainViewer'
+    attribution: 'Esri &middot; IEM / NWS'
   }).addTo(radar.map);
+  // Place labels get their own pane so storm tracks (overlay pane, 400) sit
+  // above the radar tiles but under the town names and the pin (600).
+  radar.map.createPane('labels').style.zIndex = 450;
+  radar.map.getPane('labels').style.pointerEvents = 'none';
   L.tileLayer(ESRI + 'Reference/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: RADAR_MAX_Z, minZoom: 4, zIndex: 700, opacity: 0.9
+    maxZoom: RADAR_MAX_Z, minZoom: 4, pane: 'labels', opacity: 0.9
   }).addTo(radar.map);
+  radar.tracks = L.layerGroup().addTo(radar.map);
 
   radar.pin = L.marker([place.lat, place.lon], {
     icon: L.divIcon({ className: '', html: '<div class="mepin"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }),
@@ -413,20 +531,62 @@ async function initRadar() {
 
   await loadFrames();
   radar.map.on('zoomstart', () => stopRadar());
+  // Ticks and arrowheads are sized in screen pixels, so redraw per zoom.
+  radar.map.on('zoomend', drawTracks);
+}
+
+// HRRR forecast frames after T0. The model init is usually 1-3 h old, and
+// the refd_*.json files are overwritten one by one as a new run lands, so
+// each frame's own metadata is the only trustworthy time for it.
+async function hrrrFrames(t0) {
+  try {
+    const m0 = await getJSON(hrrrMetaURL(0), 9000);
+    const init = Date.parse(m0.model_init_utc);
+    const mins = [];
+    for (let m = 0; m <= HRRR_MAX_MIN && mins.length < CAST_FRAMES; m += HRRR_STEP_MIN) {
+      if (init + m * 60000 > t0) mins.push(m);
+    }
+    const metas = await Promise.all(mins.map((m) => getJSON(hrrrMetaURL(m), 9000).catch(() => null)));
+    return metas.map((j, i) => {
+      if (!j) return null;
+      const t = Date.parse(j.model_forecast_utc), run = Date.parse(j.model_init_utc);
+      if (!isFinite(t) || !isFinite(run) || t <= t0) return null;
+      // Same layer name every run — the init stamp busts the tile cache.
+      return { time: t / 1000, layer: `hrrr::REFD-F${pad4(mins[i])}-0`, v: utcStamp(run).slice(0, 10), future: true };
+    }).filter(Boolean).sort((a, b) => a.time - b.time);
+  } catch (e) {
+    return []; // no model frames: the loop is past-only
+  }
+}
+
+function clearFrames() {
+  stopRadar();
+  Object.keys(radar.layers).forEach((k) => radar.map.removeLayer(radar.layers[k]));
+  radar.layers = {};
+  radar.frames = [];
 }
 
 async function loadFrames() {
+  if (!inRadarBox(place.lat, place.lon)) {
+    $('#radarTime').textContent = 'US only';
+    loadCells();
+    return;
+  }
   try {
-    const j = await getJSON('https://api.rainviewer.com/public/weather-maps.json', 9000);
-    radar.host = j.host;
-    const past = (j.radar && j.radar.past) || [];
-    const cast = (j.radar && j.radar.nowcast) || [];
-    radar.frames = past.slice(-10).concat(cast).map((f) => ({ time: f.time, path: f.path, future: false }));
-    for (let i = radar.frames.length - cast.length; i < radar.frames.length; i++) radar.frames[i].future = true;
-    if (!radar.frames.length) return;
+    const j = await getJSON(IEM + 'data/gis/images/4326/USCOMP/n0q_0.json', 9000);
+    const t0 = Date.parse(j.meta && j.meta.valid);
+    if (!isFinite(t0)) throw new Error('no composite time');
+    const past = [];
+    for (let k = PAST_FRAMES - 1; k >= 0; k--) {
+      const t = t0 - k * PAST_STEP_MIN * 60000;
+      past.push({ time: t / 1000, layer: 'ridge::USCOMP-N0Q-' + utcStamp(t), v: '', future: false });
+    }
+    const cast = await hrrrFrames(t0);
+    clearFrames();
+    radar.frames = past.concat(cast);
     const s = $('#radarSlider');
     s.max = radar.frames.length - 1;
-    radar.idx = Math.max(0, radar.frames.length - cast.length - 1); // newest observed frame
+    radar.idx = past.length - 1; // newest observed frame
     s.value = radar.idx;
     showFrame(radar.idx);
     // Parked on the newest observed frame until the play button is pressed.
@@ -436,12 +596,13 @@ async function loadFrames() {
   } catch (e) {
     $('#radarTime').textContent = 'unavailable';
   }
+  loadCells();
 }
 
 function frameLayer(i) {
   if (radar.layers[i]) return radar.layers[i];
   const f = radar.frames[i];
-  const layer = L.tileLayer(`${radar.host}${f.path}/256/{z}/{x}/{y}/4/1_1.png`, {
+  const layer = L.tileLayer(IEM_TILES + f.layer + '/{z}/{x}/{y}.png' + (f.v ? '?v=' + f.v : ''), {
     opacity: 0, tileSize: 256, maxZoom: RADAR_MAX_Z, maxNativeZoom: RADAR_NATIVE_Z, zIndex: 400 + i
   });
   layer.addTo(radar.map);
@@ -455,8 +616,56 @@ function showFrame(i) {
   frameLayer(i).setOpacity(0.82);
   Object.keys(radar.layers).forEach((k) => { if (+k !== i) radar.layers[k].setOpacity(0); });
   const f = radar.frames[i];
-  $('#radarTime').textContent = (f.future ? '+' : '') + clockLocal(f.time * 1000);
+  $('#radarTime').textContent = !inRadarBox(place.lat, place.lon) ? 'US only'
+    : (f.future ? '+' : '') + clockLocal(f.time * 1000);
   $('#radarSlider').value = i;
+}
+
+// Storm cells for the current place. Failure = no tracks, silently.
+async function loadCells() {
+  const p = place;
+  let cells = [];
+  if (inRadarBox(p.lat, p.lon)) {
+    try {
+      cells = pickCells(parseCells(await getJSON(IEM + 'geojson/nexrad_attr.geojson', 12000)), p.lat, p.lon);
+    } catch (e) { /* no tracks */ }
+  }
+  if (place !== p) return; // the place changed while this was in flight
+  radar.cells = cells;
+  drawTracks();
+}
+
+// One track per cell: dot, 60-minute line, ticks at 15/30/45, arrowhead.
+function drawTracks() {
+  if (!radar.tracks) return;
+  radar.tracks.clearLayers();
+  const map = radar.map, z = map.getZoom();
+  radar.cells.forEach((c) => {
+    const color = severe(c) ? '#FF5A5A' : '#fff';
+    const style = { color, weight: 2, opacity: 0.85, interactive: false };
+    const line = [0, 15, 30, 45, 60].map((m) => cellAt(c, m));
+    L.polyline(line, style).addTo(radar.tracks);
+    L.circleMarker(line[0], { radius: 3, stroke: false, fillColor: color, fillOpacity: 0.85, interactive: false })
+      .addTo(radar.tracks);
+    // Screen-space direction of the whole track, for ticks and the head.
+    const a = map.project(line[0], z), b = map.project(line[4], z);
+    const len = a.distanceTo(b);
+    if (len < 1) return;
+    const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+    const at = (p, dx, dy) => map.unproject(L.point(p.x + dx, p.y + dy), z);
+    [1, 2, 3].forEach((k) => {
+      const p = map.project(line[k], z);
+      L.polyline([at(p, -uy * 4, ux * 4), at(p, uy * 4, -ux * 4)], style).addTo(radar.tracks);
+    });
+    L.polygon([
+      at(b, 0, 0),
+      at(b, -ux * 8 - uy * 4.5, -uy * 8 + ux * 4.5),
+      at(b, -ux * 8 + uy * 4.5, -uy * 8 - ux * 4.5)
+    ], { stroke: false, fillColor: color, fillOpacity: 0.85, interactive: false }).addTo(radar.tracks);
+  });
+  const a = arrival(radar.cells, place.lat, place.lon), el = $('#radarEta');
+  el.hidden = !a;
+  el.textContent = a ? `Cell ${a.mi} mi ${a.dir}, ${a.mph} mph, reaches here ≈ ${clockLocal(a.t)}` : '';
 }
 
 function playRadar() {
@@ -504,6 +713,10 @@ function setPlace(p, save) {
   if (radar.map) {
     radar.map.setView([p.lat, p.lon], RADAR_Z);
     if (radar.pin) radar.pin.setLatLng([p.lat, p.lon]);
+    // Frames are the same for any US place; only a first load (or a move in
+    // from outside the coverage box) needs them fetched. Cells are per place.
+    if (!radar.frames.length) loadFrames();
+    else { showFrame(radar.idx); loadCells(); }
   }
   loadWeather(true);
 }

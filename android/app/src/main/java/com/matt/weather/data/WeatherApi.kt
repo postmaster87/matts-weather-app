@@ -1,7 +1,13 @@
 package com.matt.weather.data
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 object WeatherApi {
 
@@ -132,28 +138,98 @@ object WeatherApi {
         return out
     }
 
-    /** Past frames (~1 h) plus RainViewer's 30-minute nowcast. */
-    suspend fun radar(): RadarIndex {
-        val root = Net.getJson("https://api.rainviewer.com/public/weather-maps.json", 9_000)
-        val host = root.optString("host", "https://tilecache.rainviewer.com")
-        val radar = root.optJSONObject("radar") ?: return RadarIndex(host, emptyList())
-        val frames = ArrayList<RadarFrame>()
+    const val IEM = "https://mesonet.agron.iastate.edu/"
+    const val IEM_TILES = IEM + "cache/tile.py/1.0.0/"
+    private const val PAST_FRAMES = 10
+    private const val PAST_STEP_MIN = 10
+    private const val CAST_FRAMES = 12
+    private const val HRRR_STEP_MIN = 15
+    private const val HRRR_MAX_MIN = 1080
 
-        val past = radar.optJSONArray("past")
-        if (past != null) {
-            val from = maxOf(0, past.length() - 10)
-            for (i in from until past.length()) {
-                val o = past.getJSONObject(i)
-                frames.add(RadarFrame(o.optLong("time"), o.optString("path"), false))
-            }
+    /** The US composite and HRRR only cover the lower 48 and a margin around it. */
+    fun inRadarBox(lat: Double, lon: Double): Boolean =
+        lat in 21.0..53.0 && lon in -130.0..-60.0
+
+    private val UTC_MIN = DateTimeFormatter.ofPattern("yyyyMMddHHmm").withZone(ZoneOffset.UTC)
+
+    /** ISO-8601 UTC -> epoch millis, or null. */
+    private fun isoMs(s: String?): Long? = try {
+        if (s.isNullOrEmpty()) null else Instant.parse(s).toEpochMilli()
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun hrrrMetaUrl(m: Int) = IEM + "data/gis/images/4326/hrrr/refd_${"%04d".format(m)}.json"
+
+    /**
+     * 10 observed NEXRAD composite frames (T0 - 90 min .. T0, 10-minute steps)
+     * plus up to 12 HRRR simulated-reflectivity frames after T0.
+     */
+    suspend fun radar(): RadarIndex {
+        val meta = Net.getJson(IEM + "data/gis/images/4326/USCOMP/n0q_0.json", 9_000)
+        val t0 = isoMs(meta.optJSONObject("meta")?.optString("valid"))
+            ?: throw IllegalStateException("no composite time")
+        val frames = ArrayList<RadarFrame>()
+        for (k in PAST_FRAMES - 1 downTo 0) {
+            val t = t0 - k * PAST_STEP_MIN * 60_000L
+            frames.add(RadarFrame(t / 1000, "ridge::USCOMP-N0Q-" + UTC_MIN.format(Instant.ofEpochMilli(t)), "", false))
         }
-        val cast = radar.optJSONArray("nowcast")
-        if (cast != null) {
-            for (i in 0 until cast.length()) {
-                val o = cast.getJSONObject(i)
-                frames.add(RadarFrame(o.optLong("time"), o.optString("path"), true))
-            }
+        frames.addAll(hrrrFrames(t0))
+        return RadarIndex(frames)
+    }
+
+    /**
+     * HRRR forecast frames after [t0]. The model init is usually 1-3 h old, and
+     * the refd_*.json files are overwritten one by one as a new run lands, so
+     * each frame's own metadata is the only trustworthy time for it.
+     */
+    private suspend fun hrrrFrames(t0: Long): List<RadarFrame> = try {
+        val init = isoMs(Net.getJson(hrrrMetaUrl(0), 9_000).optString("model_init_utc"))
+            ?: throw IllegalStateException("no model init")
+        val mins = (0..HRRR_MAX_MIN step HRRR_STEP_MIN)
+            .filter { init + it * 60_000L > t0 }
+            .take(CAST_FRAMES)
+        coroutineScope {
+            mins.map { m ->
+                async {
+                    try {
+                        val j = Net.getJson(hrrrMetaUrl(m), 9_000)
+                        val t = isoMs(j.optString("model_forecast_utc"))
+                        val run = isoMs(j.optString("model_init_utc"))
+                        if (t == null || run == null || t <= t0) null
+                        else RadarFrame(
+                            t / 1000, "hrrr::REFD-F${"%04d".format(m)}-0",
+                            UTC_MIN.format(Instant.ofEpochMilli(run)).take(10), true
+                        )
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll()
+        }.filterNotNull().sortedBy { it.time }
+    } catch (e: Exception) {
+        emptyList() // no model frames: the loop is past-only
+    }
+
+    /** NEXRAD storm cells worth drawing for this place (see StormTracks.pick). */
+    suspend fun stormCells(lat: Double, lon: Double): List<StormCell> {
+        val root = Net.getJson(IEM + "geojson/nexrad_attr.geojson", 12_000)
+        val feats = root.optJSONArray("features") ?: return emptyList()
+        val out = ArrayList<StormCell>(feats.length())
+        for (i in 0 until feats.length()) {
+            val f = feats.optJSONObject(i) ?: continue
+            val p = f.optJSONObject("properties") ?: continue
+            val g = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: continue
+            val c = StormCell(
+                lat = g.optDouble(1), lon = g.optDouble(0),
+                dbz = p.optDouble("max_dbz"), sknt = p.optDouble("sknt"), drct = p.optDouble("drct"),
+                posh = p.optDouble("posh", 0.0).let { if (it.isNaN()) 0.0 else it },
+                tvs = if (p.isNull("tvs")) "NONE" else p.optString("tvs").ifEmpty { "NONE" },
+                valid = isoMs(p.optString("valid")) ?: 0L
+            )
+            if (listOf(c.lat, c.lon, c.dbz, c.sknt, c.drct).any { it.isNaN() }) continue
+            out.add(c)
         }
-        return RadarIndex(host, frames)
+        return StormTracks.pick(out, lat, lon)
     }
 }

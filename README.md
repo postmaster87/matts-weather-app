@@ -26,7 +26,7 @@ from the National Weather Service and are the one thing here worth trusting.
 | Current | Temp, condition, feels-like, today's high/low, wind + direction, gust, humidity, UV, sunrise/sunset. |
 | Hourly | Next 48 hours. Horizontal scroll. Blue bar under each hour = chance of precip. |
 | 10 Day | Day and date, icon, max chance of precip, and a low→high bar scaled across the days shown. **Tap a day** to swap the hourly strip to that day; tap again for the rolling 48 h. The `5 day` / `10 day` button in the card header switches the length, and the choice is remembered. |
-| Radar | 10 past frames (~1 hr) plus RainViewer's 30-minute nowcast. Opens **parked on the newest observed frame** — press play to run the loop. Every frame's tiles are fetched as soon as the radar loads, so the first loop draws. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. |
+| Radar | 10 observed NEXRAD frames (last 90 min, 10-minute steps) plus up to 12 HRRR model frames (~3 hr ahead, 15-minute steps), all on the NWS color scale. Opens **parked on the newest observed frame** — press play to run the loop. Every frame's tiles are fetched as soon as the radar loads, so the first loop draws. Drag the slider to scrub, `Expand` for fullscreen, pinch to zoom. A `+` on the timestamp means it's a forecast frame, not an observation. **Storm tracks**: moving cells (≥ 5 kt, ≥ 40 dBZ) within 300 km get a dot, a line to where they'll be in 60 minutes, ticks at 15 / 30 / 45 min and an arrowhead — red when the radar flags a tornado vortex signature or a ≥ 50% probability of severe hail. If a track passes within 8 km of the place, a line under the timeline says which cell and roughly when (`Cell 25 mi W, 46 mph, reaches here ≈ 3:02pm`). US only — elsewhere the timestamp reads `US only`. |
 
 Location: tap the place name to search any city, or the crosshair/pin to use GPS.
 The last six places you looked at stay as chips in the search screen. Defaults to
@@ -52,8 +52,8 @@ straight over this one and keeps its data. No uninstall step, ever again.
 The published `weather.apk` is byte-for-byte the build running on the phone:
 
 ```
-version 1.1 (versionCode 2)
-sha256  46aeba040b5466c382b0485d2ed91e33be90ebc55a72d12942e6caacbca10c41
+version 1.2 (versionCode 3)
+sha256  20b68ffd4fd152fe6fa71614757cda5c3f9d9812873332ab71d02b6161fd8805
 ```
 
 **The key is two files, neither of them in this repo, and neither recoverable:**
@@ -117,8 +117,9 @@ android/app/src/main/java/com/matt/weather/
   MainActivity.kt          activity, permission request, theme
   WeatherVm.kt             state, refresh + retry, GPS, search
   data/
-    Models.kt              Place, Current, Hour, Day, Forecast, Alert, RadarFrame
-    WeatherApi.kt          Open-Meteo, NWS, RainViewer, geocoding
+    Models.kt              Place, Current, Hour, Day, Forecast, Alert, RadarFrame, StormCell
+    WeatherApi.kt          Open-Meteo, NWS, IEM radar + storm cells, geocoding
+    StormTracks.kt         storm-track math: filter, de-dupe, extrapolate, arrival
     Net.kt                 HttpURLConnection with a real User-Agent
     Store.kt               SharedPreferences: place, recents, cached payload
     Loc.kt                 LocationManager fix + platform reverse geocode
@@ -127,7 +128,7 @@ android/app/src/main/java/com/matt/weather/
   ui/
     WeatherScreen.kt       screen, top bar, fullscreen radar
     Cards.kt               current / hourly / daily / alert cards
-    RadarCard.kt           osmdroid map, frame overlays, timeline
+    RadarCard.kt           osmdroid map, frame overlays, storm tracks, timeline
     WeatherIcon.kt         the 12 condition icons, drawn on Canvas
     Theme.kt               palette
 ```
@@ -144,7 +145,7 @@ build's SVGs, so both versions look identical rather than merely similar.
 | [Open-Meteo](https://open-meteo.com/) | Forecast (hourly + daily) | No |
 | [Open-Meteo Geocoding](https://open-meteo.com/en/docs/geocoding-api) | Place search | No |
 | [api.weather.gov](https://www.weather.gov/documentation/services-web-api) | NWS alerts (US only) | No |
-| [RainViewer](https://www.rainviewer.com/api.html) | Radar tiles + nowcast | No |
+| [Iowa Environmental Mesonet (IEM)](https://mesonet.agron.iastate.edu/) | Radar tiles: NEXRAD US composite (past) and HRRR simulated reflectivity (future); NEXRAD storm attributes (storm tracks). US only | No |
 | [Esri dark canvas](https://services.arcgisonline.com/) | Radar basemap | No |
 | [Leaflet 1.9.4](https://leafletjs.com/) / [osmdroid](https://github.com/osmdroid/osmdroid) | Map (web / Android) | No |
 
@@ -164,10 +165,15 @@ platform `Geocoder` instead, so it makes no third-party call for that.
 
 ## Known limits
 
-- **Radar detail caps at zoom 7.** RainViewer's free tiles don't exist past z7 —
-  deeper zooms return a "Zoom Level Not Supported" placeholder. Both builds pin
-  the radar layer at z7 and let the map upscale, so zooming past regional view
-  gets blocky rather than blank. Map zoom is capped at 10.
+- **Radar is US-only.** IEM's composite and HRRR cover the lower 48 and a margin
+  around it (lat 21-53, lon -130 to -60). Outside that box the radar timestamp
+  reads `US only` and no radar or storm data is fetched. Map zoom is capped at 10.
+- **Forecast radar frames are HRRR model output, not observation.** They come in
+  15-minute steps (the observed frames are 10 minutes apart), and the model run
+  behind them is usually 1-3 hours old.
+- **Storm tracks are NEXRAD storm attributes extrapolated in a straight line at
+  constant speed.** Real cells turn, speed up, split and die; the arrival line is
+  a rough heads-up, not a warning.
 - **Alerts are US-only.** `api.weather.gov` returns nothing outside the US; the
   alert strip just stays hidden.
 - **Radar timestamps are in the phone's timezone**, everything else is in the
@@ -191,7 +197,7 @@ platform `Geocoder` instead, so it makes no third-party call for that.
 ```
 index.html              markup
 app.css                 all styling, dark theme, phone-first
-app.js                  everything else — data, icons, render, radar
+app.js                  everything else — data, icons, render, radar, storm tracks
 sw.js                   service worker, caches the shell only
 manifest.webmanifest    PWA manifest
 icons/                  192 / 512 / maskable-512 PNGs

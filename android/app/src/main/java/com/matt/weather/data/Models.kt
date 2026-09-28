@@ -90,6 +90,28 @@ data class Alert(
     val body: String
 )
 
-data class RadarFrame(val time: Long, val path: String, val future: Boolean)
+/**
+ * One IEM tile layer. [time] is epoch seconds. [stamp] is the HRRR model init
+ * ("2026092817") that busts the cache for a layer name reused every run;
+ * empty for observed frames, whose layer name already carries the time.
+ */
+data class RadarFrame(val time: Long, val layer: String, val stamp: String, val future: Boolean) {
+    /** Unique per frame content; osmdroid keys its tile cache on this. */
+    val cacheKey: String
+        get() = "iem_" + (layer + if (stamp.isEmpty()) "" else "_$stamp").replace(Regex("[^A-Za-z0-9]"), "_")
+}
 
-data class RadarIndex(val host: String, val frames: List<RadarFrame>)
+data class RadarIndex(val frames: List<RadarFrame>)
+
+/** One NEXRAD storm-attribute cell. [drct] is as reported; see StormTracks.heading. */
+data class StormCell(
+    val lat: Double,
+    val lon: Double,
+    val dbz: Double,
+    val sknt: Double,
+    val drct: Double,
+    val posh: Double,
+    val tvs: String,
+    /** Epoch millis of the observation; 0 when missing. */
+    val valid: Long
+)

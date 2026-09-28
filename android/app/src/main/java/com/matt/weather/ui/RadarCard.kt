@@ -6,6 +6,7 @@ import android.graphics.Color as AColor
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
+import android.graphics.Path
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,7 +38,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.matt.weather.data.Fmt
 import com.matt.weather.data.Net
 import com.matt.weather.data.Place
+import com.matt.weather.data.RadarFrame
 import com.matt.weather.data.RadarIndex
+import com.matt.weather.data.StormCell
+import com.matt.weather.data.StormTracks
+import com.matt.weather.data.WeatherApi
 import kotlinx.coroutines.delay
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.MapTileProviderBasic
@@ -49,13 +55,10 @@ import org.osmdroid.views.Projection
 import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.TilesOverlay
 import java.io.File
+import kotlin.math.sqrt
 
-/**
- * RainViewer's free tiles only exist through zoom 7 — deeper zooms return a
- * "Zoom Level Not Supported" placeholder, so the radar source is capped there
- * and osmdroid upscales it. The map itself stops at 10.
- */
-private const val RADAR_NATIVE_Z = 7
+/** IEM serves both radar products through z10, the same cap as the map. */
+private const val RADAR_NATIVE_Z = 10
 private const val MAP_MAX_Z = 10.0
 private const val MAP_MIN_Z = 4.0
 private const val START_Z = 7.0
@@ -74,12 +77,79 @@ private class EsriSource(name: String, service: String) : OnlineTileSourceBase(
             MapTileIndex.getX(pMapTileIndex)
 }
 
-private class RadarSource(name: String, private val prefix: String) : OnlineTileSourceBase(
-    name, 4, RADAR_NATIVE_Z, 256, ".png", arrayOf(prefix)
+/**
+ * One IEM frame. The source name is osmdroid's tile-cache key, so it is the
+ * frame's [RadarFrame.cacheKey] — HRRR reuses its layer names every model run.
+ */
+private class RadarSource(private val f: RadarFrame) : OnlineTileSourceBase(
+    f.cacheKey, 4, RADAR_NATIVE_Z, 256, ".png", arrayOf(WeatherApi.IEM_TILES)
 ) {
     override fun getTileURLString(i: Long): String =
-        prefix + "/256/" + MapTileIndex.getZoom(i) + "/" +
-            MapTileIndex.getX(i) + "/" + MapTileIndex.getY(i) + "/4/1_1.png"
+        WeatherApi.IEM_TILES + f.layer + "/" + MapTileIndex.getZoom(i) + "/" +
+            MapTileIndex.getX(i) + "/" + MapTileIndex.getY(i) + ".png" +
+            (if (f.stamp.isEmpty()) "" else "?v=" + f.stamp)
+}
+
+/**
+ * One track per storm cell: dot, 60-minute line, ticks at 15/30/45 minutes,
+ * arrowhead. Geometry comes from [StormTracks]; only pixels are done here.
+ */
+private class TracksOverlay(private val dp: Float) : Overlay() {
+    var cells: List<StormCell> = emptyList()
+
+    private val line = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * dp
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val fill = Paint().apply { isAntiAlias = true; style = Paint.Style.FILL }
+    private val path = Path()
+
+    override fun draw(pCanvas: Canvas, pProjection: Projection) {
+        for (c in cells) {
+            // White or #FF5A5A at 85% alpha.
+            val color = if (StormTracks.severe(c)) 0xD9FF5A5A.toInt() else 0xD9FFFFFF.toInt()
+            line.color = color
+            fill.color = color
+            val pts = listOf(0.0, 15.0, 30.0, 45.0, 60.0).map {
+                val g = StormTracks.cellAt(c, it)
+                pProjection.toPixels(GeoPoint(g.first, g.second), null)
+            }
+            for (k in 1 until pts.size) {
+                pCanvas.drawLine(
+                    pts[k - 1].x.toFloat(), pts[k - 1].y.toFloat(),
+                    pts[k].x.toFloat(), pts[k].y.toFloat(), line
+                )
+            }
+            val a = pts.first()
+            val b = pts.last()
+            pCanvas.drawCircle(a.x.toFloat(), a.y.toFloat(), 3f * dp, fill)
+            // Screen-space direction of the whole track, for ticks and the head.
+            val dx = (b.x - a.x).toFloat()
+            val dy = (b.y - a.y).toFloat()
+            val len = sqrt(dx * dx + dy * dy)
+            if (len < 1f) continue
+            val ux = dx / len
+            val uy = dy / len
+            val t = 4f * dp
+            for (k in 1..3) {
+                val px = pts[k].x.toFloat()
+                val py = pts[k].y.toFloat()
+                pCanvas.drawLine(px - uy * t, py + ux * t, px + uy * t, py - ux * t, line)
+            }
+            val h = 8f * dp
+            val w = 4.5f * dp
+            val bx = b.x.toFloat()
+            val by = b.y.toFloat()
+            path.reset()
+            path.moveTo(bx, by)
+            path.lineTo(bx - ux * h - uy * w, by - uy * h + ux * w)
+            path.lineTo(bx - ux * h + uy * w, by - uy * h - ux * w)
+            path.close()
+            pCanvas.drawPath(path, fill)
+        }
+    }
 }
 
 private class PinOverlay(var lat: Double, var lon: Double) : Overlay() {
@@ -125,6 +195,7 @@ private class RadarState {
     var frameKey = ""
     var frames: List<TilesOverlay> = emptyList()
     var pin: PinOverlay? = null
+    var tracks: TracksOverlay? = null
     var placeKey = ""
     var lastIdx = -1
 }
@@ -175,7 +246,7 @@ private fun buildMap(ctx: Context): MapView {
     }
 }
 
-private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
+private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, cells: List<StormCell>, idx: Int) {
     val ctx = map.context
     val st = map.tag as? RadarState ?: return
 
@@ -187,7 +258,7 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
         st.pin?.let { it.lat = place.lat; it.lon = place.lon }
     }
 
-    val key = radar?.frames?.joinToString(",") { it.path }.orEmpty()
+    val key = radar?.frames?.joinToString(",") { it.cacheKey }.orEmpty()
     if (key != st.frameKey) {
         st.frameKey = key
         map.overlays.clear()
@@ -195,14 +266,17 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
         // Every frame stays enabled and is hidden with a zero-alpha filter
         // instead. A disabled overlay never asks for its tiles, which left the
         // first loop blank while each frame fetched on its first showing.
-        st.frames = radar?.frames?.mapIndexed { i, f ->
+        st.frames = radar?.frames?.map { f ->
             transparentTiles(
-                TilesOverlay(
-                    overlayProvider(map, RadarSource("rv$i", radar.host + f.path)), ctx
-                )
+                TilesOverlay(overlayProvider(map, RadarSource(f)), ctx)
             ).apply { setColorFilter(FrameHidden) }
         }.orEmpty()
         st.frames.forEach { map.overlays.add(it) }
+
+        // Storm tracks above the radar, under the labels and the pin.
+        val tracks = st.tracks ?: TracksOverlay(ctx.resources.displayMetrics.density)
+        st.tracks = tracks
+        map.overlays.add(tracks)
 
         // Place labels ride on top of the radar so towns stay readable.
         map.overlays.add(
@@ -221,6 +295,8 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
         st.lastIdx = -1
     }
 
+    st.tracks?.cells = cells
+
     if (idx != st.lastIdx) {
         st.lastIdx = idx
         st.frames.forEachIndexed { i, o ->
@@ -234,6 +310,7 @@ private fun syncMap(map: MapView, place: Place, radar: RadarIndex?, idx: Int) {
 fun RadarSection(
     place: Place,
     radar: RadarIndex?,
+    cells: List<StormCell>,
     idx: Int,
     playing: Boolean,
     onIdx: (Int) -> Unit,
@@ -242,6 +319,10 @@ fun RadarSection(
     mapModifier: Modifier
 ) {
     val frames = radar?.frames.orEmpty()
+    val covered = WeatherApi.inRadarBox(place.lat, place.lon)
+    val eta = remember(cells, place) {
+        StormTracks.arrival(cells, place.lat, place.lon, System.currentTimeMillis())
+    }
 
     LaunchedEffect(playing, frames.size) {
         if (!playing || frames.size < 2) return@LaunchedEffect
@@ -259,7 +340,7 @@ fun RadarSection(
     ) {
         AndroidView(
             factory = { buildMap(it) },
-            update = { syncMap(it, place, radar, idx) },
+            update = { syncMap(it, place, radar, cells, idx) },
             onRelease = { it.onDetach() },
             modifier = mapModifier.fillMaxWidth()
         )
@@ -309,11 +390,22 @@ fun RadarSection(
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                frames.getOrNull(idx)?.let {
+                if (!covered) "US only" else frames.getOrNull(idx)?.let {
                     (if (it.future) "+" else "") + Fmt.clockDevice(it.time * 1000L)
                 } ?: if (radar == null) "…" else "—",
                 color = Wx.Fg2, fontSize = 12.sp,
                 modifier = Modifier.width(64.dp)
+            )
+        }
+
+        if (eta != null) {
+            Text(
+                "Cell ${eta.mi} mi ${eta.dir}, ${eta.mph} mph, reaches here ≈ ${Fmt.clockDevice(eta.at)}",
+                color = Wx.Fg2, fontSize = 12.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Wx.Card2)
+                    .padding(start = 9.dp, end = 9.dp, bottom = 8.dp)
             )
         }
     }
